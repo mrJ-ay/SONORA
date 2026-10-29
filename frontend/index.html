@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SONORA · Multi-Window Web DAW</title>
-  <link rel="stylesheet" href="style.css?v=20261029v6">
+  <link rel="stylesheet" href="style.css?v=20261029v7">
 </head>
 <body>
   <!-- TOP STUDIO BAR -->
@@ -71,18 +71,18 @@
           <span class="win-icon">🎞️</span>
           <span class="win-title-text">전체 편집기 · ARRANGEMENT</span>
           <div class="win-header-extra">
-            <button id="addTrackBtn" class="add-track-btn plain" type="button" title="일반 빈 트랙 추가 (추가 후 트랙의 악기 슬롯에서 드럼/신스/외부악기 장착)">＋ 트랙 추가</button>
+            <button id="addTrackBtn" class="add-track-btn plain" type="button" title="일반 빈 트랙 추가 (추가 후 트랙 슬롯에서 오디오 녹음 / 드럼 / 신스 / 외부악기 선택)">＋ 트랙 추가</button>
           </div>
         </div>
         <div class="win-controls">
-          <span class="win-hint-inline">트랙 추가 후 [＋ 악기 선택]에서 드럼·신스·외부파일 장착 · 빈 마디 클릭: 클립 생성</span>
+          <span class="win-hint-inline">트랙 슬롯에서 오디오 녹음·드럼·신스·외부파일 장착 · 빈 마디 클릭: 클립 생성</span>
           <button type="button" class="win-ctrl-btn" data-win-act="min" title="최소화">─</button>
           <button type="button" class="win-ctrl-btn" data-win-act="max" title="최대화 / 복원">□</button>
         </div>
       </header>
       <div class="win-body arrangement-split">
         <div class="track-headers-wrap">
-          <div class="track-headers-ruler">TRACKS · 악기 슬롯(I/O)</div>
+          <div class="track-headers-ruler">TRACKS · 악기 / 오디오(I/O)</div>
           <div id="trackHeadersList" class="track-headers-list"></div>
         </div>
         <div id="arrangementWrap" class="arrangement-canvas-wrap">
@@ -113,8 +113,8 @@
     <!-- DRAG & DROP EXTERNAL FILE OVERLAY -->
     <div id="dropOverlay" class="drop-overlay" hidden>
       <div class="drop-overlay-box">
-        <strong>📂 외부 악기 / 신스 파일을 여기에 놓으세요!</strong>
-        <span>지원 포맷: 오디오 샘플(.wav, .mp3, .ogg, .flac) · 사운드폰트(.sf2) · 신스 패치(.json)</span>
+        <strong>📂 오디오 파일 / 외부 악기 / 신스 파일을 여기에 놓으세요!</strong>
+        <span>오디오 클립 & 샘플(.wav, .mp3, .ogg, .flac, .m4a) · 사운드폰트(.sf2) · 신스 패치(.json)</span>
       </div>
     </div>
   </main>
@@ -122,7 +122,7 @@
   <!-- WINDOW DOCK / TASKBAR -->
   <footer class="daw-statusbar">
     <div id="windowTaskbar" class="window-taskbar"></div>
-    <div class="statusbar-tip">💡 모든 창 헤더(⠿)를 드래그해 자유 이동·화면 끝 스냅 분할 가능 · 외부 .wav/.mp3/.sf2/.json 파일 드래그 앤 드롭 지원</div>
+    <div class="statusbar-tip">💡 모든 창 헤더(⠿) 드래그 이동 · 트랙 슬롯에서 마이크 녹음/오디오 클립/신스 선택 · 오디오 파일 드래그 앤 드롭 지원</div>
   </footer>
 
   <!-- HIDDEN EXTERNAL INSTRUMENT FILE INPUT -->
@@ -151,6 +151,6 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <script type="module" src="app.js?v=20261029v6"></script>
+  <script type="module" src="app.js?v=20261029v7"></script>
 </body>
 </html>

@@ -5,7 +5,11 @@ import {
   exportSynthPatchJson,
   getSampleEntry,
   getSf2Metadata,
+  restoreAllSamplesFromIdb,
+  reverseSampleEntry,
+  downloadSampleAsWav,
 } from "./audio/externalLoader.js";
+import { AudioRecorderManager } from "./audio/recorder.js";
 import {
   DEMO_PROJECTS,
   createPlainTrack,
@@ -28,13 +32,16 @@ let project = DEMO_PROJECTS.blank();
 let selectedClipId = null;
 
 // Track context for file picker callbacks:
-// { mode: "new_track" } | { mode: "replace_track", trackId } | { mode: "drum_pad", trackId, drumKey, clipId } | { mode: "add_drum_pad", trackId, clipId }
+// { mode: "new_track" } | { mode: "replace_track", trackId } | { mode: "audio_clip", trackId, bar } | { mode: "drum_pad", trackId, drumKey, clipId } | { mode: "add_drum_pad", trackId, clipId }
 let pendingFileAction = { mode: "new_track" };
 
 // Active floating window registries
 const openPianoRolls = new Map(); // clipId -> { winId, view, trackId }
 const openBeatSeqs = new Map();   // clipId -> { winId, trackId, renderGrid, updatePlayhead, syncLoopBtn }
-const openInstWins = new Map();   // trackId -> { winId, renderContent }
+const openAudioClips = new Map(); // clipId -> { winId, trackId, renderEditor }
+const openInstWins = new Map();   // trackId -> { winId, renderContent, updateInputMeter }
+
+const recorder = new AudioRecorderManager();
 
 // DOM Elements
 const projectTitleInput = document.querySelector("#projectTitleInput");
@@ -88,7 +95,7 @@ function showToast(msg) {
   toastEl.textContent = msg;
   toastEl.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toastEl.hidden = true; }, 3000);
+  toastTimer = setTimeout(() => { toastEl.hidden = true; }, 3200);
 }
 
 function escapeHtml(str) {
@@ -167,17 +174,28 @@ const arrangementView = new ArrangementView(arrangementCanvas, arrangementWrap, 
     renderTrackHeaders();
     renderMixerSelection();
   },
-  onSelectClip: (clipId) => {
-    selectedClipId = clipId;
+  onSelectClip: (trackOrClipId, maybeClip) => {
+    if (maybeClip && typeof maybeClip === "object") {
+      project.selectedTrackId = trackOrClipId?.id || project.selectedTrackId;
+      selectedClipId = maybeClip.id;
+      renderTrackHeaders();
+      renderMixerSelection();
+    } else {
+      selectedClipId = trackOrClipId;
+    }
   },
-  onOpenClipEditor: (trackId, clipId) => {
-    openClipWindow(trackId, clipId);
+  onOpenClipEditor: (trackOrId, clipOrId, barHint = 0) => {
+    const tId = typeof trackOrId === "object" ? trackOrId?.id : trackOrId;
+    const cId = typeof clipOrId === "object" ? clipOrId?.id : clipOrId;
+    openClipWindow(tId, cId, barHint);
   },
   onSeekBar: (barIdx) => {
     engine.seekToBar(barIdx);
   },
   onChanged: () => {
     persistLocal();
+    renderTrackHeaders();
+    renderMixerSelection();
     cleanupOrphanClipWindows();
   },
 });
@@ -207,13 +225,17 @@ function cleanupOrphanClipWindows() {
   for (const [cid, entry] of [...openBeatSeqs.entries()]) {
     if (!validClipIds.has(cid)) wm.closeWindow(entry.winId);
   }
+  for (const [cid, entry] of [...openAudioClips.entries()]) {
+    if (!validClipIds.has(cid)) wm.closeWindow(entry.winId);
+  }
   for (const [tid, entry] of [...openInstWins.entries()]) {
     if (!validTrackIds.has(tid)) wm.closeWindow(entry.winId);
   }
 }
 
 function getTrackSlotLabel(trk) {
-  if (!trk || trk.type === "empty" || trk.engine === "none") return "＋ 악기 선택";
+  if (!trk || trk.type === "empty" || trk.engine === "none") return "＋ 악기 / 오디오";
+  if (trk.type === "audio") return `🎙️ ${trk.pluginName || "오디오 / 녹음"}`;
   if (trk.type === "drumkit") return `🥁 ${trk.pluginName || "Drum Rack"}`;
   if (trk.engine === "sampler") return `🔊 ${trk.pluginName || trk.name}`;
   if (trk.engine === "sf2") return `🎼 ${trk.pluginName || trk.name}`;
@@ -222,18 +244,25 @@ function getTrackSlotLabel(trk) {
 
 function mountPluginOnTrack(trk, spec) {
   if (!trk) return;
-  // Close incompatible open clip editor windows for this track if switching between drumkit <-> melodic or clearing
   const wasDrum = trk.type === "drumkit";
+  const wasAudio = trk.type === "audio";
   const willBeDrum = spec.mode === "drumkit";
+  const willBeAudio = spec.mode === "audio";
   const willBeEmpty = spec.mode === "empty";
-  if (willBeEmpty || (wasDrum && !willBeDrum)) {
+
+  if (willBeEmpty || willBeAudio || (wasDrum && !willBeDrum)) {
     for (const [, bs] of [...openBeatSeqs.entries()]) {
       if (bs.trackId === trk.id) wm.closeWindow(bs.winId);
     }
   }
-  if (willBeEmpty || (!wasDrum && willBeDrum)) {
+  if (willBeEmpty || willBeAudio || (!wasDrum && willBeDrum)) {
     for (const [, pr] of [...openPianoRolls.entries()]) {
       if (pr.trackId === trk.id) wm.closeWindow(pr.winId);
+    }
+  }
+  if (wasAudio && !willBeAudio) {
+    for (const [, ac] of [...openAudioClips.entries()]) {
+      if (ac.trackId === trk.id) wm.closeWindow(ac.winId);
     }
   }
 
@@ -245,13 +274,18 @@ function mountPluginOnTrack(trk, spec) {
     trk.category = "EMPTY";
     trk.color = "#64748b";
     trk.synth = {};
+  } else if (spec.mode === "audio") {
+    trk.type = "audio";
+    trk.engine = "audio";
+    trk.pluginName = "오디오 / 녹음";
+    trk.category = "AUDIO";
+    trk.color = "#38bdf8";
   } else if (spec.mode === "drumkit") {
     trk.type = "drumkit";
     trk.engine = "drumkit";
     trk.pluginName = "Studio Drum Rack";
     trk.category = "DRUM";
     trk.color = "#ff5c5c";
-    // Ensure drumSteps exist on any existing clips on this track
     for (const cl of project.clips || []) {
       if (cl.trackId === trk.id) {
         if (!cl.drumSteps) cl.drumSteps = {};
@@ -283,6 +317,117 @@ function mountPluginOnTrack(trk, spec) {
   if (iw) iw.renderContent();
 }
 
+function createAudioTimelineClip(trk, sampleRes, preferredStartBar = null) {
+  const bpm = Math.max(40, Math.min(240, project.bpm || 120));
+  const barSec = (60 / bpm) * 4;
+  let startBar = preferredStartBar;
+  if (startBar === null || startBar === undefined) {
+    let maxEnd = 0;
+    for (const c of project.clips || []) {
+      if (c.trackId === trk.id) {
+        const end = (Number(c.bar) || 0) + (Number(c.lengthBars) || 1);
+        if (end > maxEnd) maxEnd = end;
+      }
+    }
+    startBar = maxEnd > 0 ? Math.ceil(maxEnd * 4) / 4 : 0;
+  }
+
+  const lengthBars = Math.max(0.2, Math.round((sampleRes.duration / barSec) * 100) / 100);
+  const clip = {
+    id: `clip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    kind: "audio",
+    trackId: trk.id,
+    name: sampleRes.name || "Audio Take",
+    bar: Math.max(0, startBar),
+    lengthBars,
+    sampleId: sampleRes.sampleId,
+    offsetSec: 0,
+    gain: 1.0,
+    playbackRate: 1.0,
+    fadeInSec: 0.01,
+    fadeOutSec: 0.02,
+    peaks: sampleRes.peaks || [],
+  };
+
+  if (!project.clips) project.clips = [];
+  project.clips.push(clip);
+  selectedClipId = clip.id;
+  persistLocal();
+  arrangementView.resizeAndDraw();
+  return clip;
+}
+
+async function finishLiveRecording() {
+  if (!recorder.isRecording) return null;
+  engine.isRecording = false;
+  arrangementView.liveRecording = null;
+  engine.stop(false);
+
+  try {
+    const res = await recorder.stopRecording(engine.ctx);
+    if (!res) return null;
+    const trk = (project.tracks || []).find((t) => t.id === res.trackId);
+    if (trk) {
+      const clip = createAudioTimelineClip(trk, res, res.startBar);
+      renderTrackHeaders();
+      const iw = openInstWins.get(trk.id);
+      if (iw) iw.renderContent();
+      showToast(`🎙️ '${clip.name}' (${res.duration.toFixed(1)}초) 녹음 완료! 타임라인에 배치되었습니다.`);
+      return clip;
+    }
+  } catch (err) {
+    renderTrackHeaders();
+    showToast(err.message || "녹음 처리 중 오류가 발생했습니다.");
+  }
+  return null;
+}
+
+async function toggleLiveRecordOnTrack(trk, customStartBar = null) {
+  if (!trk) return;
+  if (recorder.isRecording) {
+    const wasSameTrack = recorder.recordingMeta?.trackId === trk.id;
+    await finishLiveRecording();
+    if (wasSameTrack) return;
+  }
+
+  try {
+    engine.ensureContext();
+    const startBar =
+      customStartBar !== null && customStartBar !== undefined
+        ? Math.max(0, Math.round(customStartBar * 4) / 4)
+        : Math.max(0, Math.round((engine.currentGlobalStep / 16) * 4) / 4);
+
+    const takeCount = (project.clips || []).filter((c) => c.trackId === trk.id && c.kind === "audio").length + 1;
+    const takeName = `${trk.name} Take ${takeCount}`;
+    const stripInput = engine.graph?.strips.get(trk.id)?.input || engine.ctx.destination;
+
+    await recorder.startRecording({
+      audioCtx: engine.ctx,
+      trackId: trk.id,
+      startBar,
+      takeName,
+      deviceId: trk.inputDeviceId || "",
+      monitorDest: stripInput,
+    });
+
+    engine.loopClipId = null;
+    syncLoopButtons();
+    engine.isRecording = true;
+    arrangementView.liveRecording = { trackId: trk.id, startBar };
+    engine.seekToBar(startBar);
+    if (!engine.isPlaying) engine.start();
+
+    renderTrackHeaders();
+    const iw = openInstWins.get(trk.id);
+    if (iw) iw.renderContent();
+    showToast(`🔴 '${trk.name}' 실시간 녹음 시작! (정지 버튼을 누르면 클립으로 저장됩니다)`);
+  } catch (err) {
+    engine.isRecording = false;
+    arrangementView.liveRecording = null;
+    showToast(err?.message || "마이크/오디오 입력 권한을 허용해 주세요.");
+  }
+}
+
 // TRACK HEADERS (LEFT SIDE OF ARRANGEMENT)
 function renderTrackHeaders() {
   trackHeadersList.innerHTML = "";
@@ -294,18 +439,35 @@ function renderTrackHeaders() {
     row.style.borderLeftColor = trk.color || "#64748b";
 
     const isEmpty = trk.type === "empty" || trk.engine === "none";
+    const isAudio = trk.type === "audio";
     const isDrum = trk.type === "drumkit";
+    const isRecHere = recorder.isRecording && recorder.recordingMeta?.trackId === trk.id;
+
     const tagText = isEmpty
       ? "비어있음"
-      : isDrum
-        ? "DRUM"
-        : trk.engine === "sampler"
-          ? "SAMPLER"
-          : trk.engine === "sf2"
-            ? "SF2"
-            : (trk.category || "SYNTH").toUpperCase();
+      : isAudio
+        ? "AUDIO"
+        : isDrum
+          ? "DRUM"
+          : trk.engine === "sampler"
+            ? "SAMPLER"
+            : trk.engine === "sf2"
+              ? "SF2"
+              : (trk.category || "SYNTH").toUpperCase();
 
     const slotLabel = getTrackSlotLabel(trk);
+
+    let extraBtnsHtml = "";
+    if (isAudio) {
+      extraBtnsHtml = `
+        <button class="trk-rec-btn ${isRecHere ? "recording" : ""}" data-act="rec" type="button" title="마이크/외부 사운드 실시간 녹음 시작·종료">${isRecHere ? "■ 정지" : "● 녹음"}</button>
+        <button class="trk-action-btn" data-act="importaudio" type="button" title="오디오 파일(.wav/.mp3)을 타임라인에 추가">📂 파일</button>
+      `;
+    } else if (!isEmpty) {
+      extraBtnsHtml = `
+        <button class="trk-action-btn" data-act="editclip" type="button" title="독립 ${isDrum ? "비트 시퀀서" : "피아노롤"} 창 열기">${isDrum ? "🥁 비트창" : "🎹 피아노롤"}</button>
+      `;
+    }
 
     row.innerHTML = `
       <div class="th-top">
@@ -316,14 +478,14 @@ function renderTrackHeaders() {
         <div class="th-btn-group">
           <button class="ms-btn mute ${trk.muted ? "active" : ""}" data-act="mute" type="button" title="뮤트">M</button>
           <button class="ms-btn solo ${trk.solo ? "active" : ""}" data-act="solo" type="button" title="솔로">S</button>
-          <button class="trk-slot-btn ${isEmpty ? "unassigned" : ""}" data-act="slot" type="button" title="이 트랙에 넣을 악기/드럼/외부파일 선택 및 설정">${escapeHtml(slotLabel)}</button>
-          ${!isEmpty ? `<button class="trk-action-btn" data-act="editclip" type="button" title="독립 ${isDrum ? "비트 시퀀서" : "피아노롤"} 창 열기">${isDrum ? "🥁 비트창" : "🎹 피아노롤"}</button>` : ""}
+          <button class="trk-slot-btn ${isEmpty ? "unassigned" : ""}" data-act="slot" type="button" title="이 트랙에 넣을 오디오/드럼/신스/외부파일 선택 및 설정">${escapeHtml(slotLabel)}</button>
+          ${extraBtnsHtml}
         </div>
         <button class="ms-btn" data-act="delete" type="button" title="트랙 삭제">✕</button>
       </div>
     `;
 
-    row.addEventListener("click", (e) => {
+    row.addEventListener("click", async (e) => {
       const btn = e.target.closest("[data-act]");
       project.selectedTrackId = trk.id;
 
@@ -349,6 +511,12 @@ function renderTrackHeaders() {
         renderMixer();
       } else if (act === "slot") {
         openInstrumentWindow(trk.id);
+      } else if (act === "rec") {
+        await toggleLiveRecordOnTrack(trk);
+      } else if (act === "importaudio") {
+        pendingFileAction = { mode: "audio_clip", trackId: trk.id, bar: null };
+        externalInstFileInput.value = "";
+        externalInstFileInput.click();
       } else if (act === "editclip") {
         let clip = (project.clips || []).find((c) => c.trackId === trk.id && c.id === selectedClipId)
           || (project.clips || []).find((c) => c.trackId === trk.id);
@@ -364,6 +532,9 @@ function renderTrackHeaders() {
         if (project.tracks.length <= 1) {
           showToast("최소 1개의 트랙은 남겨두어야 합니다.");
           return;
+        }
+        if (recorder.isRecording && recorder.recordingMeta?.trackId === trk.id) {
+          await finishLiveRecording();
         }
         project.tracks = project.tracks.filter((t) => t.id !== trk.id);
         project.clips = (project.clips || []).filter((c) => c.trackId !== trk.id);
@@ -403,7 +574,7 @@ addTrackBtn.addEventListener("click", () => {
   engine.rebuildMixGraph();
   persistLocal();
   renderAll();
-  showToast(`'${newTrack.name}' 추가 완료! 트랙의 [＋ 악기 선택]을 눌러 넣을 악기를 골라주세요.`);
+  showToast(`'${newTrack.name}' 추가 완료! [＋ 악기 / 오디오] 슬롯에서 오디오 녹음·드럼·신스를 골라주세요.`);
 });
 
 async function handleImportedFiles(fileList, actionContext) {
@@ -411,6 +582,23 @@ async function handleImportedFiles(fileList, actionContext) {
   for (const file of fileList) {
     try {
       const res = await importExternalInstrumentFile(file, engine.ctx);
+
+      if (actionContext.mode === "audio_clip") {
+        if (res.kind !== "sample") {
+          showToast("오디오 트랙에는 오디오 파일(.wav, .mp3, .ogg, .flac, .m4a, .webm)을 선택해 주세요.");
+          continue;
+        }
+        const trk = (project.tracks || []).find((t) => t.id === actionContext.trackId);
+        if (trk) {
+          if (trk.type !== "audio") mountPluginOnTrack(trk, { mode: "audio" });
+          const clip = createAudioTimelineClip(trk, res, actionContext.bar);
+          const iw = openInstWins.get(trk.id);
+          if (iw) iw.renderContent();
+          openAudioClipWindow(trk, clip);
+          showToast(`🎙️ '${trk.name}' 타임라인에 오디오 '${res.name}' (${res.duration.toFixed(1)}초) 추가 완료!`);
+        }
+        continue;
+      }
 
       if (actionContext.mode === "drum_pad") {
         if (res.kind !== "sample") {
@@ -480,7 +668,28 @@ async function handleImportedFiles(fileList, actionContext) {
         continue;
       }
 
-      // Drag & Drop onto desktop: if selected track is empty, mount directly onto it; else create plain track & mount!
+      // Drag & Drop onto desktop:
+      // If dropping a raw audio file (.wav/.mp3/.ogg/.flac/.m4a/.webm), place it as an Audio Clip on an Audio Track!
+      if (res.kind === "sample") {
+        let audioTrk = (project.tracks || []).find(
+          (t) => t.id === project.selectedTrackId && (t.type === "audio" || t.type === "empty" || t.engine === "none")
+        );
+        if (!audioTrk) {
+          audioTrk = createPlainTrack((project.tracks?.length || 0) + 1);
+          project.tracks.push(audioTrk);
+          project.selectedTrackId = audioTrk.id;
+          engine.graph = null;
+        }
+        if (audioTrk.type !== "audio") {
+          mountPluginOnTrack(audioTrk, { mode: "audio" });
+        }
+        const clip = createAudioTimelineClip(audioTrk, res, null);
+        renderAll();
+        showToast(`🎙️ '${audioTrk.name}'에 오디오 클립 '${res.name}' 배치 완료!`);
+        continue;
+      }
+
+      // .sf2 or .synth.json dropped onto desktop -> mount as virtual instrument
       let targetTrack = (project.tracks || []).find(
         (t) => t.id === project.selectedTrackId && (t.type === "empty" || t.engine === "none")
       );
@@ -553,7 +762,7 @@ externalInstFileInput.addEventListener("change", async (e) => {
   await handleImportedFiles(files, pendingFileAction);
 });
 
-// Drag & Drop external instrument files onto Desktop
+// Drag & Drop external instrument / audio files onto Desktop
 let dragDepth = 0;
 window.addEventListener("dragenter", (e) => {
   if (e.dataTransfer?.types?.includes("Files")) {
@@ -576,23 +785,241 @@ window.addEventListener("drop", async (e) => {
   await handleImportedFiles([...e.dataTransfer.files], { mode: "drop" });
 });
 
-// FLOATING CLIP WINDOWS (PIANO ROLL OR BEAT SEQUENCER)
-function openClipWindow(trackId, clipId) {
+// FLOATING CLIP WINDOWS (AUDIO CLIP EDITOR, PIANO ROLL, OR BEAT SEQUENCER)
+function openClipWindow(trackId, clipId, barHint = 0) {
   const track = (project.tracks || []).find((t) => t.id === trackId);
-  const clip = (project.clips || []).find((c) => c.id === clipId);
-  if (!track || !clip) return;
+  if (!track) return;
 
   if (track.type === "empty" || track.engine === "none") {
     openInstrumentWindow(track.id);
-    showToast("먼저 이 트랙에 넣을 악기나 드럼을 선택해 주세요!");
+    showToast("먼저 이 트랙에 사용할 오디오 녹음, 드럼 또는 가상악기를 선택해 주세요!");
     return;
   }
+
+  if (track.type === "audio") {
+    const clip = clipId ? (project.clips || []).find((c) => c.id === clipId) : null;
+    if (!clip) {
+      engine.seekToBar(barHint || 0);
+      openInstrumentWindow(track.id);
+      return;
+    }
+    openAudioClipWindow(track, clip);
+    return;
+  }
+
+  const clip = (project.clips || []).find((c) => c.id === clipId);
+  if (!clip) return;
 
   if (track.type === "drumkit") {
     openBeatSeqWindow(track, clip);
   } else {
     openPianoRollWindow(track, clip);
   }
+}
+
+// 0) INDEPENDENT FLOATING AUDIO CLIP WAVEFORM EDITOR WINDOW
+function openAudioClipWindow(track, clip) {
+  const winId = `win-ac-${clip.id}`;
+  if (openAudioClips.has(clip.id)) {
+    wm.toggleMinimize(winId, false);
+    wm.focusWindow(winId);
+    return;
+  }
+
+  const win = wm.createWindow({
+    id: winId,
+    title: `오디오 클립 편집 · ${track.name} — ${clip.name || "Audio Clip"}`,
+    icon: "🎙️",
+    accentColor: track.color || "#38bdf8",
+    closable: true,
+    width: 600,
+    height: 410,
+    minWidth: 440,
+    minHeight: 320,
+    onClose: () => {
+      openAudioClips.delete(clip.id);
+    },
+  });
+
+  const renderEditor = () => {
+    const t = (project.tracks || []).find((x) => x.id === track.id);
+    const c = (project.clips || []).find((x) => x.id === clip.id);
+    if (!t || !c) return;
+
+    const entry = getSampleEntry(c.sampleId);
+    const totalDur = entry?.duration || 4.0;
+    wm.setWindowTitle(winId, `오디오 클립 편집 · ${t.name} — ${c.name || "Audio Clip"}`);
+
+    win.bodyEl.innerHTML = `
+      <div class="inst-win-scroll">
+        <div class="inst-top-actions">
+          <input class="clip-name-input" data-role="ac-name" type="text" style="width:170px;" value="${escapeHtml(c.name || "Audio Clip")}" title="클립 이름">
+          <div style="display:flex;gap:5px;flex-wrap:wrap;">
+            <button type="button" class="mini-btn accent" data-role="ac-preview">▶ 클립 미리듣기</button>
+            <button type="button" class="mini-btn" data-role="ac-reverse" title="오디오 파형을 역방향으로 뒤집습니다">◀▶ 역재생</button>
+            <button type="button" class="mini-btn" data-role="ac-wav" title="이 오디오 테이크를 .wav 파일로 다운로드">💾 WAV 저장</button>
+          </div>
+        </div>
+
+        <div class="waveform-box">
+          <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--muted);">
+            <span>원본 길이: <strong style="color:var(--cyan)">${totalDur.toFixed(2)}초</strong> ${entry ? `· ${entry.sampleRate}Hz` : ""}</span>
+            <span>시작 마디: <strong>${(Number(c.bar) + 1).toFixed(2)} 마디</strong> · 재생 길이: <strong data-lbl="lengthBars">${Number(c.lengthBars || 1).toFixed(2)} 마디</strong></span>
+          </div>
+          <canvas class="waveform-canvas" data-role="ac-wave" width="540" height="92" style="height:92px;"></canvas>
+        </div>
+
+        <div class="synth-grid">
+          <label class="synth-field">
+            <span>클립 볼륨 (Gain) <strong data-lbl="gain">${Math.round((c.gain ?? 1) * 100)}%</strong></span>
+            <input type="range" min="0" max="2" step="0.02" value="${c.gain ?? 1}" data-ac-param="gain">
+          </label>
+          <label class="synth-field">
+            <span>재생 속도 / 피치 <strong data-lbl="playbackRate">${Number(c.playbackRate ?? 1).toFixed(2)}x</strong></span>
+            <input type="range" min="0.5" max="2.0" step="0.01" value="${c.playbackRate ?? 1}" data-ac-param="playbackRate">
+          </label>
+          <label class="synth-field">
+            <span>앞부분 자르기 (Start Offset) <strong data-lbl="offsetSec">${Number(c.offsetSec ?? 0).toFixed(2)}s</strong></span>
+            <input type="range" min="0" max="${Math.max(0.1, (totalDur - 0.05)).toFixed(2)}" step="0.01" value="${c.offsetSec ?? 0}" data-ac-param="offsetSec">
+          </label>
+          <label class="synth-field">
+            <span>클립 길이 (마디) <strong data-lbl="lenSlider">${Number(c.lengthBars ?? 1).toFixed(2)} 마디</strong></span>
+            <input type="range" min="0.2" max="32" step="0.05" value="${c.lengthBars ?? 1}" data-ac-param="lengthBars">
+          </label>
+          <label class="synth-field">
+            <span>페이드 인 (Fade In) <strong data-lbl="fadeInSec">${Number(c.fadeInSec ?? 0.01).toFixed(2)}s</strong></span>
+            <input type="range" min="0.005" max="2.0" step="0.01" value="${c.fadeInSec ?? 0.01}" data-ac-param="fadeInSec">
+          </label>
+          <label class="synth-field">
+            <span>페이드 아웃 (Fade Out) <strong data-lbl="fadeOutSec">${Number(c.fadeOutSec ?? 0.02).toFixed(2)}s</strong></span>
+            <input type="range" min="0.005" max="2.0" step="0.01" value="${c.fadeOutSec ?? 0.02}" data-ac-param="fadeOutSec">
+          </label>
+        </div>
+      </div>
+    `;
+
+    const drawClipWave = () => {
+      const cvs = win.bodyEl.querySelector('[data-role="ac-wave"]');
+      if (!cvs) return;
+      const wCtx = cvs.getContext("2d");
+      const W = cvs.width;
+      const H = cvs.height;
+      wCtx.fillStyle = "#06090e";
+      wCtx.fillRect(0, 0, W, H);
+
+      const smp = getSampleEntry(c.sampleId);
+      const peaks = smp?.peaks?.length ? smp.peaks : (c.peaks || []);
+      const midY = H * 0.5;
+      const gainMul = Math.min(2.0, Math.max(0, Number(c.gain ?? 1)));
+
+      if (smp?.channels?.[0]) {
+        const data = smp.channels[0];
+        const step = Math.max(1, Math.floor(data.length / W));
+        wCtx.strokeStyle = "#38bdf8";
+        wCtx.lineWidth = 1;
+        wCtx.beginPath();
+        for (let x = 0; x < W; x++) {
+          let min = 1, max = -1;
+          const sIdx = x * step;
+          for (let j = 0; j < step && sIdx + j < data.length; j++) {
+            const v = Math.max(-1, Math.min(1, data[sIdx + j] * gainMul));
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+          wCtx.moveTo(x, ((1 - max) * 0.5) * H);
+          wCtx.lineTo(x, ((1 - min) * 0.5) * H);
+        }
+        wCtx.stroke();
+      } else if (peaks.length) {
+        wCtx.fillStyle = "#38bdf8";
+        const colW = W / peaks.length;
+        peaks.forEach((p, idx) => {
+          const bh = Math.max(2, Math.min(1, p * gainMul) * H * 0.9);
+          wCtx.fillRect(idx * colW, midY - bh * 0.5, Math.max(1.5, colW - 0.5), bh);
+        });
+      }
+
+      // Shade trimmed region
+      const dur = smp?.duration || totalDur;
+      if (dur > 0) {
+        const bpm = Math.max(40, Math.min(240, project.bpm || 120));
+        const barSec = (60 / bpm) * 4;
+        const offPx = Math.min(W, Math.round(((Number(c.offsetSec) || 0) / dur) * W));
+        const playBufSec = (Number(c.lengthBars) || 1) * barSec * (Number(c.playbackRate) || 1);
+        const endPx = Math.min(W, Math.round((((Number(c.offsetSec) || 0) + playBufSec) / dur) * W));
+
+        wCtx.fillStyle = "rgba(0, 0, 0, 0.65)";
+        wCtx.fillRect(0, 0, offPx, H);
+        wCtx.fillRect(endPx, 0, W - endPx, H);
+
+        wCtx.strokeStyle = "#ffd166";
+        wCtx.lineWidth = 1.5;
+        wCtx.beginPath();
+        wCtx.moveTo(offPx, 0); wCtx.lineTo(offPx, H);
+        wCtx.moveTo(endPx, 0); wCtx.lineTo(endPx, H);
+        wCtx.stroke();
+      }
+    };
+    drawClipWave();
+
+    win.bodyEl.querySelector('[data-role="ac-name"]').addEventListener("input", (e) => {
+      c.name = e.target.value;
+      wm.setWindowTitle(winId, `오디오 클립 편집 · ${t.name} — ${c.name || "Audio Clip"}`);
+      persistLocal();
+      arrangementView.draw();
+    });
+
+    win.bodyEl.querySelector('[data-role="ac-preview"]').addEventListener("click", () => {
+      if (!engine.previewAudioClip(t, c)) {
+        showToast("재생할 오디오 버퍼를 찾을 수 없습니다.");
+      }
+    });
+
+    win.bodyEl.querySelector('[data-role="ac-reverse"]').addEventListener("click", () => {
+      const updated = reverseSampleEntry(c.sampleId);
+      if (updated) {
+        c.peaks = updated.peaks;
+        persistLocal();
+        drawClipWave();
+        arrangementView.draw();
+        engine.previewAudioClip(t, c);
+        showToast("오디오 파형이 역방향(Reverse)으로 반전되었습니다!");
+      }
+    });
+
+    win.bodyEl.querySelector('[data-role="ac-wav"]').addEventListener("click", () => {
+      if (downloadSampleAsWav(c.sampleId, c.name || "audio_take")) {
+        showToast(`'${c.name || "audio_take"}.wav' 다운로드 완료!`);
+      }
+    });
+
+    win.bodyEl.querySelectorAll("[data-ac-param]").forEach((inp) => {
+      inp.addEventListener("input", () => {
+        const k = inp.dataset.acParam;
+        c[k] = Number(inp.value);
+        if (k === "gain") {
+          win.bodyEl.querySelector('[data-lbl="gain"]').textContent = `${Math.round(c.gain * 100)}%`;
+        } else if (k === "playbackRate") {
+          win.bodyEl.querySelector('[data-lbl="playbackRate"]').textContent = `${c.playbackRate.toFixed(2)}x`;
+        } else if (k === "offsetSec") {
+          win.bodyEl.querySelector('[data-lbl="offsetSec"]').textContent = `${c.offsetSec.toFixed(2)}s`;
+        } else if (k === "lengthBars") {
+          win.bodyEl.querySelector('[data-lbl="lenSlider"]').textContent = `${c.lengthBars.toFixed(2)} 마디`;
+          win.bodyEl.querySelector('[data-lbl="lengthBars"]').textContent = `${c.lengthBars.toFixed(2)} 마디`;
+        } else if (k === "fadeInSec") {
+          win.bodyEl.querySelector('[data-lbl="fadeInSec"]').textContent = `${c.fadeInSec.toFixed(2)}s`;
+        } else if (k === "fadeOutSec") {
+          win.bodyEl.querySelector('[data-lbl="fadeOutSec"]').textContent = `${c.fadeOutSec.toFixed(2)}s`;
+        }
+        persistLocal();
+        drawClipWave();
+        arrangementView.resizeAndDraw();
+      });
+    });
+  };
+
+  openAudioClips.set(clip.id, { winId, trackId: track.id, renderEditor });
+  renderEditor();
 }
 
 // 1) INDEPENDENT FLOATING PIANO ROLL WINDOW (with 1/32, 1/64, Triplet, Free Timing, Slice, Zoom)
@@ -1038,16 +1465,24 @@ function openInstrumentWindow(trackId) {
     if (!t) return;
 
     const isEmpty = t.type === "empty" || t.engine === "none";
+    const isAudio = t.type === "audio";
     const isDrum = t.type === "drumkit";
     const presetOpts = INSTRUMENT_PRESETS.map(
       (p) =>
-        `<option value="${p.id}" ${!isEmpty && !isDrum && t.presetId === p.id && t.engine !== "sampler" && t.engine !== "sf2" ? "selected" : ""}>🎹 ${p.name} (${p.category})</option>`
+        `<option value="${p.id}" ${!isEmpty && !isAudio && !isDrum && t.presetId === p.id && t.engine !== "sampler" && t.engine !== "sf2" ? "selected" : ""}>🎹 ${p.name} (${p.category})</option>`
     ).join("");
 
-    // CASE A: EMPTY / UNASSIGNED TRACK -> PLUGIN RACK BROWSER (CHOOSE WHAT TO MOUNT ON THIS TRACK)
+    // CASE A: EMPTY / UNASSIGNED TRACK -> CHOOSE AUDIO TRACK, DRUM RACK, SYNTH, OR EXTERNAL FILE
     if (isEmpty) {
-      wm.setWindowTitle(winId, `트랙 악기 선택 · ${t.name} (비어있음)`);
+      wm.setWindowTitle(winId, `트랙 설정 · ${t.name} (비어있음)`);
       const cardsHtml = [
+        `
+          <button type="button" class="plugin-card-btn" data-mount-audio="1" style="border-left:3px solid #38bdf8;">
+            <span class="pc-cat" style="color:#38bdf8;">AUDIO TRACK · LIVE RECORD</span>
+            <span class="pc-name">🎙️ 오디오 / 녹음 트랙</span>
+            <span class="pc-desc">마이크·외부 사운드 실시간 녹음 및 오디오 파일(.wav/.mp3) 파형 배치</span>
+          </button>
+        `,
         `
           <button type="button" class="plugin-card-btn" data-mount-drum="1" style="border-left:3px solid #ff5c5c;">
             <span class="pc-cat" style="color:#ff5c5c;">DRUM RACK · BEAT SEQUENCER</span>
@@ -1069,24 +1504,40 @@ function openInstrumentWindow(trackId) {
       win.bodyEl.innerHTML = `
         <div class="inst-win-scroll">
           <div style="font-size:0.78rem;color:var(--muted);line-height:1.45;">
-            <strong style="color:var(--text)">${escapeHtml(t.name)}</strong>에 넣을 가상악기, 드럼 랙 또는 내 컴퓨터의 외부 악기 파일을 선택하세요. 장착한 뒤에도 언제든 교체하거나 비울 수 있습니다.
+            <strong style="color:var(--text)">${escapeHtml(t.name)}</strong>에 넣을 역할을 선택하세요 — <strong>실제 오디오 녹음/파일 트랙</strong>, <strong>드럼 랙</strong>, <strong>신스</strong> 또는 <strong>외부 가상악기</strong> 중 원하는 것을 자유롭게 장착할 수 있습니다.
           </div>
 
-          <button type="button" class="ext-drop-btn" data-role="load-ext">
-            📂 내 컴퓨터에서 외부 악기 · 샘플(.wav/.mp3/.ogg/.flac) · 사운드폰트(.sf2) · 신스패치(.json) 불러오기
-          </button>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <button type="button" class="ext-drop-btn" data-role="load-audio-clip" style="border-color:rgba(56,189,248,0.6);color:#7dd3fc;">
+              🎙️ 오디오 파일(.wav/.mp3 등) 그대로 넣기
+            </button>
+            <button type="button" class="ext-drop-btn" data-role="load-ext">
+              🎹 외부 악기(.sf2/.json/건반샘플) 장착
+            </button>
+          </div>
 
-          <div style="font-size:0.7rem;font-weight:800;color:var(--muted);letter-spacing:0.04em;margin-top:2px;">내장 드럼 랙 & 신스 가상악기</div>
+          <div style="font-size:0.7rem;font-weight:800;color:var(--muted);letter-spacing:0.04em;margin-top:2px;">트랙 역할 · 내장 악기 선택</div>
           <div class="plugin-rack-grid">
             ${cardsHtml}
           </div>
         </div>
       `;
 
+      win.bodyEl.querySelector('[data-role="load-audio-clip"]').addEventListener("click", () => {
+        pendingFileAction = { mode: "audio_clip", trackId: t.id, bar: null };
+        externalInstFileInput.value = "";
+        externalInstFileInput.click();
+      });
+
       win.bodyEl.querySelector('[data-role="load-ext"]').addEventListener("click", () => {
         pendingFileAction = { mode: "replace_track", trackId: t.id };
         externalInstFileInput.value = "";
         externalInstFileInput.click();
+      });
+
+      win.bodyEl.querySelector("[data-mount-audio]")?.addEventListener("click", () => {
+        mountPluginOnTrack(t, { mode: "audio" });
+        showToast(`'${t.name}'을(를) 오디오 / 녹음 트랙으로 설정했습니다!`);
       });
 
       win.bodyEl.querySelector("[data-mount-drum]")?.addEventListener("click", () => {
@@ -1101,6 +1552,195 @@ function openInstrumentWindow(trackId) {
           mountPluginOnTrack(t, { mode: "preset", presetId });
           engine.previewTrackNote(t, 60, 0.32);
           showToast(`'${t.name}'에 '${t.pluginName}' 장착 완료!`);
+        });
+      });
+      return;
+    }
+
+    // CASE A2: AUDIO / LIVE RECORDING TRACK
+    if (isAudio) {
+      wm.setWindowTitle(winId, `오디오 / 녹음 트랙 · ${t.name}`);
+      const isRecHere = recorder.isRecording && recorder.recordingMeta?.trackId === t.id;
+      const trackClips = (project.clips || []).filter((c) => c.trackId === t.id);
+
+      const clipsListHtml = trackClips.length
+        ? trackClips
+            .map(
+              (c) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;background:#0b1018;border:1px solid var(--border);border-radius:7px;">
+                <div style="min-width:0;">
+                  <strong style="font-size:0.78rem;color:#38bdf8;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🎙️ ${escapeHtml(c.name || "Audio Take")}</strong>
+                  <span style="font-size:0.68rem;color:var(--muted);">시작 ${(Number(c.bar) + 1).toFixed(2)}마디 · 길이 ${Number(c.lengthBars || 1).toFixed(2)}마디</span>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                  <button type="button" class="mini-btn" data-ac-play="${c.id}">▶ 재생</button>
+                  <button type="button" class="mini-btn accent" data-ac-edit="${c.id}">✂️ 파형 편집</button>
+                  <button type="button" class="mini-btn" data-ac-dl="${c.id}">💾 WAV</button>
+                </div>
+              </div>
+            `
+            )
+            .join("")
+        : `<div style="font-size:0.74rem;color:var(--muted);padding:10px;text-align:center;background:#0a0e16;border:1px dashed var(--border);border-radius:8px;">아직 녹음되거나 추가된 오디오 클립이 없습니다. 아래에서 바로 녹음하거나 오디오 파일을 불러오세요!</div>`;
+
+      win.bodyEl.innerHTML = `
+        <div class="inst-win-scroll">
+          <div class="inst-top-actions">
+            <select class="mini-select" data-role="plugin-switch" title="이 트랙의 종류를 변경하거나 비웁니다">
+              <option value="">🔄 트랙 종류 변경 / 슬롯 비우기...</option>
+              <option value="__empty__">🚫 슬롯 비우기 (빈 트랙으로 초기화)</option>
+              <option value="__drumkit__">🥁 Studio Drum Rack (드럼 시퀀서)</option>
+              ${presetOpts}
+            </select>
+            <button type="button" class="mini-btn accent" data-role="add-audio-file">📂 오디오 파일 추가</button>
+          </div>
+
+          <div class="rec-studio-box">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+              <strong style="font-size:0.8rem;color:#f8fafc;">🎙️ 마이크 · 오디오 인터페이스 실시간 녹음</strong>
+              <button type="button" class="mini-btn" data-role="arm-mic">🎤 입력 장치 연결/새로고침</button>
+            </div>
+
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <select class="mini-select" data-role="rec-device" style="flex:1;min-width:180px;">
+                <option value="">기본 마이크 / 오디오 입력 장치</option>
+              </select>
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:0.73rem;color:var(--muted);cursor:pointer;">
+                <input type="checkbox" data-role="rec-monitor" ${recorder.monitoring ? "checked" : ""}>
+                🎧 실시간 모니터 (이어폰 권장)
+              </label>
+            </div>
+
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--muted);margin-bottom:4px;">
+                <span>입력 레벨 미터 (Input Level)</span>
+                <span>반주·메트로놈을 들으며 현재 재생 위치부터 녹음됩니다</span>
+              </div>
+              <div class="input-meter-track">
+                <div class="input-meter-fill" data-role="input-meter"></div>
+              </div>
+            </div>
+
+            <button type="button" class="rec-main-btn ${isRecHere ? "recording" : ""}" data-role="rec-toggle">
+              ${isRecHere ? "■ 녹음 완료 — 타임라인에 오디오 클립 생성 (클릭 또는 Space)" : "● 현재 마디 위치에서 바로 녹음 시작"}
+            </button>
+          </div>
+
+          <button type="button" class="ext-drop-btn" data-role="drop-audio-file" style="border-color:rgba(56,189,248,0.55);color:#7dd3fc;">
+            📂 내 컴퓨터의 오디오 파일(.wav, .mp3, .m4a, .ogg, .flac)을 타임라인에 넣기
+          </button>
+
+          <div style="font-size:0.72rem;font-weight:800;color:var(--muted);">이 트랙의 오디오 클립 (${trackClips.length})</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${clipsListHtml}
+          </div>
+        </div>
+      `;
+
+      const devSelect = win.bodyEl.querySelector('[data-role="rec-device"]');
+      const populateDevices = async () => {
+        const inputs = await recorder.listInputs();
+        if (!inputs.length) return;
+        const cur = t.inputDeviceId || recorder.activeDeviceId || "";
+        devSelect.innerHTML =
+          `<option value="">기본 마이크 / 오디오 입력</option>` +
+          inputs
+            .map(
+              (d) =>
+                `<option value="${escapeHtml(d.deviceId)}" ${d.deviceId === cur ? "selected" : ""}>🎤 ${escapeHtml(d.label)}</option>`
+            )
+            .join("");
+      };
+      populateDevices();
+
+      win.bodyEl.querySelector('[data-role="arm-mic"]').addEventListener("click", async () => {
+        try {
+          engine.ensureContext();
+          const stripInput = engine.graph?.strips.get(t.id)?.input || engine.ctx.destination;
+          await recorder.ensureStream(engine.ctx, devSelect.value || t.inputDeviceId || "", stripInput);
+          await populateDevices();
+          showToast("마이크 입력이 연결되었습니다! 입력 레벨 미터를 확인하세요.");
+        } catch (err) {
+          showToast(err?.message || "마이크 권한을 허용해 주세요.");
+        }
+      });
+
+      devSelect.addEventListener("change", async () => {
+        t.inputDeviceId = devSelect.value;
+        persistLocal();
+        if (recorder.stream?.active) {
+          try {
+            engine.ensureContext();
+            const stripInput = engine.graph?.strips.get(t.id)?.input || engine.ctx.destination;
+            await recorder.ensureStream(engine.ctx, t.inputDeviceId, stripInput);
+          } catch {}
+        }
+      });
+
+      win.bodyEl.querySelector('[data-role="rec-monitor"]').addEventListener("change", async (e) => {
+        const on = e.target.checked;
+        if (on && !recorder.stream?.active) {
+          try {
+            engine.ensureContext();
+            const stripInput = engine.graph?.strips.get(t.id)?.input || engine.ctx.destination;
+            await recorder.ensureStream(engine.ctx, t.inputDeviceId || "", stripInput);
+            await populateDevices();
+          } catch (err) {
+            e.target.checked = false;
+            showToast(err?.message || "마이크 권한을 허용해 주세요.");
+            return;
+          }
+        }
+        recorder.setMonitoring(on);
+      });
+
+      win.bodyEl.querySelector('[data-role="rec-toggle"]').addEventListener("click", async () => {
+        await toggleLiveRecordOnTrack(t);
+      });
+
+      const triggerAudioImport = () => {
+        pendingFileAction = { mode: "audio_clip", trackId: t.id, bar: null };
+        externalInstFileInput.value = "";
+        externalInstFileInput.click();
+      };
+      win.bodyEl.querySelector('[data-role="add-audio-file"]').addEventListener("click", triggerAudioImport);
+      win.bodyEl.querySelector('[data-role="drop-audio-file"]').addEventListener("click", triggerAudioImport);
+
+      win.bodyEl.querySelector('[data-role="plugin-switch"]').addEventListener("change", (e) => {
+        const val = e.target.value;
+        if (!val) return;
+        if (val === "__empty__") {
+          mountPluginOnTrack(t, { mode: "empty" });
+          showToast(`'${t.name}' 슬롯을 비웠습니다.`);
+        } else if (val === "__drumkit__") {
+          mountPluginOnTrack(t, { mode: "drumkit" });
+          engine.previewDrumRow(t, "kick");
+          showToast(`'${t.name}'에 Studio Drum Rack 장착 완료!`);
+        } else {
+          mountPluginOnTrack(t, { mode: "preset", presetId: val });
+          engine.previewTrackNote(t, 60, 0.3);
+          showToast(`'${t.name}'에 '${t.pluginName}' 장착 완료!`);
+        }
+      });
+
+      win.bodyEl.querySelectorAll("[data-ac-play]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const cl = (project.clips || []).find((x) => x.id === btn.dataset.acPlay);
+          if (cl) engine.previewAudioClip(t, cl);
+        });
+      });
+
+      win.bodyEl.querySelectorAll("[data-ac-edit]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const cl = (project.clips || []).find((x) => x.id === btn.dataset.acEdit);
+          if (cl) openAudioClipWindow(t, cl);
+        });
+      });
+
+      win.bodyEl.querySelectorAll("[data-ac-dl]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const cl = (project.clips || []).find((x) => x.id === btn.dataset.acDl);
+          if (cl) downloadSampleAsWav(cl.sampleId, cl.name || "audio_take");
         });
       });
       return;
@@ -1135,8 +1775,9 @@ function openInstrumentWindow(trackId) {
         <div class="inst-win-scroll">
           <div class="inst-top-actions">
             <select class="mini-select" data-role="plugin-switch" title="이 트랙의 악기를 교체하거나 비웁니다">
-              <option value="">🔄 다른 악기로 교체 / 슬롯 비우기...</option>
+              <option value="">🔄 다른 악기/오디오로 교체 · 비우기...</option>
               <option value="__empty__">🚫 슬롯 비우기 (빈 트랙으로 초기화)</option>
+              <option value="__audio__">🎙️ 오디오 / 녹음 트랙 (Audio & Mic Rec)</option>
               ${presetOpts}
             </select>
             <div style="display:flex;gap:5px;flex-wrap:wrap;">
@@ -1157,6 +1798,9 @@ function openInstrumentWindow(trackId) {
         if (val === "__empty__") {
           mountPluginOnTrack(t, { mode: "empty" });
           showToast(`'${t.name}' 악기 슬롯을 비웠습니다.`);
+        } else if (val === "__audio__") {
+          mountPluginOnTrack(t, { mode: "audio" });
+          showToast(`'${t.name}'을(를) 오디오 / 녹음 트랙으로 변경했습니다!`);
         } else {
           mountPluginOnTrack(t, { mode: "preset", presetId: val });
           engine.previewTrackNote(t, 60, 0.3);
@@ -1297,8 +1941,9 @@ function openInstrumentWindow(trackId) {
       <div class="inst-win-scroll">
         <div class="inst-top-actions">
           <select class="mini-select" data-role="plugin-switch" title="이 트랙의 악기를 교체하거나 슬롯을 비웁니다">
-            <option value="">🔄 악기 교체 / 슬롯 비우기...</option>
+            <option value="">🔄 악기/오디오 교체 · 슬롯 비우기...</option>
             <option value="__empty__">🚫 슬롯 비우기 (빈 트랙으로 초기화)</option>
+            <option value="__audio__">🎙️ 오디오 / 녹음 트랙 (Audio & Mic Rec)</option>
             <option value="__drumkit__">🥁 Studio Drum Rack (드럼 시퀀서)</option>
             ${presetOpts}
           </select>
@@ -1402,6 +2047,9 @@ function openInstrumentWindow(trackId) {
       if (val === "__empty__") {
         mountPluginOnTrack(t, { mode: "empty" });
         showToast(`'${t.name}' 악기 슬롯을 비웠습니다.`);
+      } else if (val === "__audio__") {
+        mountPluginOnTrack(t, { mode: "audio" });
+        showToast(`'${t.name}'을(를) 오디오 / 녹음 트랙으로 변경했습니다!`);
       } else if (val === "__drumkit__") {
         mountPluginOnTrack(t, { mode: "drumkit" });
         engine.previewDrumRow(t, "kick");
@@ -1624,6 +2272,13 @@ function calcRmsPercent(analyser) {
 }
 
 function animationFrame() {
+  if (recorder.stream?.active) {
+    const inPct = recorder.getInputLevelPercent();
+    document.querySelectorAll('[data-role="input-meter"]').forEach((el) => {
+      el.style.width = `${inPct}%`;
+    });
+  }
+
   if (engine.graph) {
     if (masterMeterRef && engine.graph.masterAnalyser) {
       masterMeterRef.style.height = `${calcRmsPercent(engine.graph.masterAnalyser)}%`;
@@ -1652,7 +2307,11 @@ function animationFrame() {
 }
 
 // TRANSPORT & TOP BAR CONTROLS
-playBtn.addEventListener("click", () => {
+playBtn.addEventListener("click", async () => {
+  if (recorder.isRecording) {
+    await finishLiveRecording();
+    return;
+  }
   if (engine.isPlaying) {
     engine.stop(false);
   } else {
@@ -1662,16 +2321,25 @@ playBtn.addEventListener("click", () => {
   }
 });
 
-stopBtn.addEventListener("click", () => {
+stopBtn.addEventListener("click", async () => {
+  if (recorder.isRecording) {
+    await finishLiveRecording();
+    engine.stop(true);
+    return;
+  }
   engine.loopClipId = null;
   syncLoopButtons();
   engine.stop(true);
 });
 
-window.addEventListener("keydown", (e) => {
+window.addEventListener("keydown", async (e) => {
   if (e.target.matches("input, textarea, select")) return;
   if (e.code === "Space") {
     e.preventDefault();
+    if (recorder.isRecording) {
+      await finishLiveRecording();
+      return;
+    }
     if (engine.isPlaying) engine.stop(false);
     else engine.start();
   }
@@ -1707,16 +2375,18 @@ layoutPresetSelect.addEventListener("change", () => {
   wm.applyLayoutPreset(val);
 });
 
-demoSelect.addEventListener("change", () => {
+demoSelect.addEventListener("change", async () => {
   const key = demoSelect.value;
   if (!key || !DEMO_PROJECTS[key]) return;
   demoSelect.value = "";
+  if (recorder.isRecording) await finishLiveRecording();
   engine.loopClipId = null;
   engine.stop(true);
 
   // Close open clip/instrument floating windows from previous session
   for (const [, pr] of [...openPianoRolls.entries()]) wm.closeWindow(pr.winId);
   for (const [, bs] of [...openBeatSeqs.entries()]) wm.closeWindow(bs.winId);
+  for (const [, ac] of [...openAudioClips.entries()]) wm.closeWindow(ac.winId);
   for (const [, iw] of [...openInstWins.entries()]) wm.closeWindow(iw.winId);
 
   project = DEMO_PROJECTS[key]();
@@ -2045,6 +2715,7 @@ function renderAll() {
     }
   } catch {}
 
+  await restoreAllSamplesFromIdb();
   await handleOneIdCallback();
 
   if (token) {

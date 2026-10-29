@@ -17,11 +17,29 @@ function getCtxCache(ctx) {
   return map;
 }
 
-export function registerDecodedSample(sampleId, name, audioBuffer, rootMidi = 60) {
+export function computePeaksFromChannel(data, numPoints = 180) {
+  if (!data || !data.length) return [];
+  const pts = Math.min(numPoints, data.length);
+  const block = Math.max(1, Math.floor(data.length / pts));
+  const peaks = new Array(pts);
+  for (let i = 0; i < pts; i++) {
+    let max = 0;
+    const start = i * block;
+    for (let j = 0; j < block && start + j < data.length; j++) {
+      const v = Math.abs(data[start + j]);
+      if (v > max) max = v;
+    }
+    peaks[i] = Math.min(1, Math.round(max * 1000) / 1000);
+  }
+  return peaks;
+}
+
+export function registerDecodedSample(sampleId, name, audioBuffer, rootMidi = 60, persistIdb = true) {
   const channels = [];
   for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
     channels.push(new Float32Array(audioBuffer.getChannelData(c)));
   }
+  const peaks = computePeaksFromChannel(channels[0], 180);
   const entry = {
     id: sampleId,
     name,
@@ -30,8 +48,13 @@ export function registerDecodedSample(sampleId, name, audioBuffer, rootMidi = 60
     duration: audioBuffer.duration,
     channels,
     rootMidi,
+    peaks,
+    rev: 1,
   };
   sampleBank.set(sampleId, entry);
+  if (persistIdb) {
+    saveSampleEntryToIdb(entry).catch(() => {});
+  }
   return entry;
 }
 
@@ -43,7 +66,7 @@ export function getSampleAudioBuffer(ctx, sampleId) {
   const entry = sampleBank.get(sampleId);
   if (!entry) return null;
   const cache = getCtxCache(ctx);
-  const key = `smp:${sampleId}`;
+  const key = `smp:${sampleId}:r${entry.rev || 1}`;
   if (cache.has(key)) return cache.get(key);
 
   const buf = ctx.createBuffer(entry.channels.length, entry.length, entry.sampleRate);
@@ -368,7 +391,135 @@ export async function importExternalInstrumentFile(file, audioCtx) {
     name: cleanName,
     duration: entry.duration,
     sampleRate: entry.sampleRate,
+    peaks: entry.peaks,
   };
+}
+
+export function reverseSampleEntry(sampleId) {
+  const entry = sampleBank.get(sampleId);
+  if (!entry) return null;
+  for (const ch of entry.channels) {
+    ch.reverse();
+  }
+  entry.peaks = computePeaksFromChannel(entry.channels[0], 180);
+  entry.rev = (entry.rev || 1) + 1;
+  saveSampleEntryToIdb(entry).catch(() => {});
+  return entry;
+}
+
+export function downloadSampleAsWav(sampleId, customFileName = "") {
+  const entry = sampleBank.get(sampleId);
+  if (!entry || !entry.channels.length) return false;
+  const numChannels = entry.channels.length;
+  const sampleRate = entry.sampleRate;
+  const numFrames = entry.length;
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataSize = numFrames * blockAlign;
+  const ab = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(ab);
+  const writeStr = (off, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < numFrames; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const s = Math.max(-1, Math.min(1, entry.channels[ch][i] || 0));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+  }
+  const blob = new Blob([ab], { type: "audio/wav" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${(customFileName || entry.name || "audio_take").replace(/[^a-zA-Z0-9가-힣_-]/g, "_")}.wav`;
+  a.click();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
+const IDB_NAME = "sonora_audio_bank_v1";
+const IDB_STORE = "samples";
+
+function openAudioIdb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") return reject(new Error("IndexedDB unavailable"));
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: "id" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveSampleEntryToIdb(entry) {
+  const db = await openAudioIdb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put({
+      id: entry.id,
+      name: entry.name,
+      sampleRate: entry.sampleRate,
+      length: entry.length,
+      duration: entry.duration,
+      channels: entry.channels,
+      rootMidi: entry.rootMidi || 60,
+      peaks: entry.peaks || [],
+      rev: entry.rev || 1,
+      updatedAt: Date.now(),
+    });
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function restoreAllSamplesFromIdb() {
+  try {
+    const db = await openAudioIdb();
+    const rows = await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    for (const r of rows) {
+      if (r && r.id && Array.isArray(r.channels) && r.channels.length) {
+        sampleBank.set(r.id, {
+          id: r.id,
+          name: r.name || "Audio Clip",
+          sampleRate: r.sampleRate || 44100,
+          length: r.length || r.channels[0].length,
+          duration: r.duration || r.channels[0].length / (r.sampleRate || 44100),
+          channels: r.channels.map((ch) => (ch instanceof Float32Array ? ch : new Float32Array(ch))),
+          rootMidi: r.rootMidi || 60,
+          peaks: r.peaks?.length ? r.peaks : computePeaksFromChannel(r.channels[0], 180),
+          rev: r.rev || 1,
+        });
+      }
+    }
+    return rows.length;
+  } catch {
+    return 0;
+  }
 }
 
 export function exportSynthPatchJson(track) {

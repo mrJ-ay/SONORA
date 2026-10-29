@@ -1,4 +1,5 @@
 import { DRUM_ROWS, triggerInstrumentVoice } from "./instruments.js";
+import { getSampleAudioBuffer } from "./externalLoader.js";
 
 function createImpulseResponse(ctx, seconds = 1.9, decay = 2.6) {
   const length = Math.floor(ctx.sampleRate * seconds);
@@ -115,8 +116,56 @@ export function getTrackDrumRows(track) {
   return [...merged, ...custom];
 }
 
+function isAudioTimelineClip(track, clip) {
+  return Boolean(clip?.sampleId && (clip.kind === "audio" || track?.type === "audio"));
+}
+
+function triggerAudioClipSlice(ctx, destination, clip, startTime, sliceOffsetSec = 0, playDurSec = 4) {
+  if (!clip?.sampleId) return null;
+  const buf = getSampleAudioBuffer(ctx, clip.sampleId);
+  if (!buf) return null;
+
+  const rate = Math.max(0.25, Math.min(4.0, Number(clip.playbackRate) || 1.0));
+  const baseOffsetSec = Math.max(0, Number(clip.offsetSec) || 0);
+  const bufOffset = baseOffsetSec + Math.max(0, sliceOffsetSec) * rate;
+  if (bufOffset >= buf.duration - 0.005) return null;
+
+  const availTimelineSec = (buf.duration - bufOffset) / rate;
+  const actualPlaySec = Math.min(playDurSec, availTimelineSec);
+  if (actualPlaySec <= 0.008) return null;
+
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.setValueAtTime(rate, startTime);
+
+  const g = ctx.createGain();
+  const targetGain = Math.max(0, Math.min(2.5, Number(clip.gain ?? 1.0)));
+  const fadeIn =
+    sliceOffsetSec > 0.01
+      ? 0.012
+      : Math.min(actualPlaySec * 0.45, Math.max(0.004, Number(clip.fadeInSec ?? 0.01)));
+  const fadeOut = Math.min(actualPlaySec * 0.45, Math.max(0.008, Number(clip.fadeOutSec ?? 0.02)));
+
+  g.gain.setValueAtTime(0.0001, startTime);
+  g.gain.linearRampToValueAtTime(Math.max(0.0001, targetGain), startTime + fadeIn);
+  g.gain.setValueAtTime(
+    Math.max(0.0001, targetGain),
+    Math.max(startTime + fadeIn, startTime + actualPlaySec - fadeOut)
+  );
+  g.gain.linearRampToValueAtTime(0.0001, startTime + actualPlaySec);
+
+  src.connect(g);
+  g.connect(destination);
+  src.start(startTime, bufOffset, actualPlaySec * rate);
+  src.stop(startTime + actualPlaySec + 0.02);
+
+  return { source: src, gain: g };
+}
+
 function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurSec) {
-  if (!track || track.type === "empty" || track.engine === "none") return;
+  if (!track || track.type === "empty" || track.engine === "none" || track.type === "audio" || clip.kind === "audio") {
+    return;
+  }
   const strip = graph.strips.get(track.id);
   if (!strip) return;
 
@@ -165,6 +214,7 @@ export class SonoraEngine {
     this.ctx = null;
     this.graph = null;
     this.isPlaying = false;
+    this.isRecording = false; // Prevents timeline wrap-around while live recording
     this.loopClipId = null; // If set, loops just that clip; otherwise plays full Arrangement
     this.metronome = false;
 
@@ -173,6 +223,10 @@ export class SonoraEngine {
     this.nextNoteTime = 0;
     this.timerId = null;
     this.visualQueue = [];
+
+    this.activeAudioVoices = new Set();
+    this.triggeredAudioClipIds = new Set();
+    this.previewVoice = null;
   }
 
   ensureContext() {
@@ -219,8 +273,92 @@ export class SonoraEngine {
     }
   }
 
+  stopActiveAudioClips() {
+    if (this.ctx) {
+      const now = this.ctx.currentTime;
+      for (const v of this.activeAudioVoices) {
+        try {
+          v.gain.gain.cancelScheduledValues(now);
+          v.gain.gain.setValueAtTime(0.0001, now);
+          v.source.stop(now + 0.015);
+        } catch {}
+      }
+      if (this.previewVoice) {
+        try {
+          this.previewVoice.source.stop(now + 0.01);
+        } catch {}
+        this.previewVoice = null;
+      }
+    }
+    this.activeAudioVoices.clear();
+    this.triggeredAudioClipIds.clear();
+  }
+
+  registerAudioVoice(voice) {
+    if (!voice) return;
+    this.activeAudioVoices.add(voice);
+    voice.source.onended = () => {
+      this.activeAudioVoices.delete(voice);
+    };
+  }
+
+  scheduleMidClipAudioAtStep(stepIndex, playTime) {
+    if (!this.ctx || !this.graph) return;
+    const project = this.getProject();
+    const bpm = Math.max(40, Math.min(240, project.bpm || 120));
+    const baseStepDur = 60 / bpm / 4;
+    const songSec = stepIndex * baseStepDur;
+
+    for (const clip of project.clips || []) {
+      const track = (project.tracks || []).find((t) => t.id === clip.trackId);
+      if (!isAudioTimelineClip(track, clip)) continue;
+      const strip = this.graph.strips.get(track.id);
+      if (!strip) continue;
+
+      const clipStartSec = (Number(clip.bar) || 0) * 16 * baseStepDur;
+      const clipDurSec = Math.max(0.05, (Number(clip.lengthBars) || 1) * 16 * baseStepDur);
+      const clipEndSec = clipStartSec + clipDurSec;
+
+      if (songSec > clipStartSec + 0.002 && songSec < clipEndSec - 0.02) {
+        const voice = triggerAudioClipSlice(
+          this.ctx,
+          strip.input,
+          clip,
+          playTime,
+          songSec - clipStartSec,
+          clipEndSec - songSec
+        );
+        this.registerAudioVoice(voice);
+        this.triggeredAudioClipIds.add(clip.id);
+      }
+    }
+  }
+
+  previewAudioClip(track, clip) {
+    if (!track || !clip?.sampleId) return false;
+    this.ensureContext();
+    if (this.previewVoice) {
+      try { this.previewVoice.source.stop(); } catch {}
+      this.previewVoice = null;
+    }
+    const project = this.getProject();
+    const bpm = Math.max(40, Math.min(240, project.bpm || 120));
+    const barDurSec = (60 / bpm) * 4;
+    const playDurSec = Math.max(0.1, (Number(clip.lengthBars) || 1) * barDurSec);
+    const strip = this.graph?.strips.get(track.id);
+    const dest = strip ? strip.input : this.graph.masterBus;
+    const voice = triggerAudioClipSlice(this.ctx, dest, clip, this.ctx.currentTime + 0.02, 0, playDurSec);
+    if (voice) {
+      this.previewVoice = voice;
+      voice.source.onended = () => {
+        if (this.previewVoice === voice) this.previewVoice = null;
+      };
+    }
+    return Boolean(voice);
+  }
+
   previewTrackNote(track, midi, durationSec = 0.26, velocity = 0.85) {
-    if (!track || track.type === "empty" || track.engine === "none") return false;
+    if (!track || track.type === "empty" || track.engine === "none" || track.type === "audio") return false;
     this.ensureContext();
     const strip = this.graph?.strips.get(track.id);
     const dest = strip ? strip.input : this.graph.masterBus;
@@ -246,7 +384,7 @@ export class SonoraEngine {
   getSongTotalSteps(project) {
     let maxBar = 4;
     for (const clip of project.clips || []) {
-      const endBar = (clip.bar || 0) + (clip.lengthBars || 1);
+      const endBar = Math.ceil((Number(clip.bar) || 0) + (Number(clip.lengthBars) || 1));
       if (endBar > maxBar) maxBar = endBar;
     }
     return maxBar * 16;
@@ -257,7 +395,9 @@ export class SonoraEngine {
     if (this.isPlaying) return;
     this.isPlaying = true;
     this.visualQueue = [];
+    this.stopActiveAudioClips();
     this.nextNoteTime = this.ctx.currentTime + 0.04;
+    this.scheduleMidClipAudioAtStep(this.currentGlobalStep, this.nextNoteTime);
     this.scheduler();
   }
 
@@ -267,19 +407,24 @@ export class SonoraEngine {
       clearTimeout(this.timerId);
       this.timerId = null;
     }
+    this.stopActiveAudioClips();
     this.visualQueue = [];
     if (resetToZero) {
       const project = this.getProject();
       const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
-      this.currentGlobalStep = loopClip ? (loopClip.bar || 0) * 16 : 0;
+      this.currentGlobalStep = loopClip ? Math.floor((loopClip.bar || 0) * 16) : 0;
       this.displayGlobalStep = this.currentGlobalStep;
     }
     if (this.onTick) this.onTick(this.displayGlobalStep, false);
   }
 
   seekToBar(barIndex) {
-    this.currentGlobalStep = Math.max(0, Math.floor(barIndex) * 16);
+    this.currentGlobalStep = Math.max(0, Math.round(barIndex * 16));
     this.displayGlobalStep = this.currentGlobalStep;
+    if (this.isPlaying && this.ctx) {
+      this.stopActiveAudioClips();
+      this.scheduleMidClipAudioAtStep(this.currentGlobalStep, this.ctx.currentTime + 0.03);
+    }
     if (this.onTick) this.onTick(this.displayGlobalStep, this.isPlaying);
   }
 
@@ -316,30 +461,67 @@ export class SonoraEngine {
       const stepInBar = stepIndex % 16;
 
       for (const clip of project.clips || []) {
+        const track = (project.tracks || []).find((t) => t.id === clip.trackId);
+        if (!track) continue;
+
+        if (isAudioTimelineClip(track, clip)) {
+          if (this.loopClipId && this.loopClipId !== clip.id) continue;
+          const clipStartStep = (Number(clip.bar) || 0) * 16;
+          if (!this.triggeredAudioClipIds.has(clip.id) && clipStartStep >= stepIndex && clipStartStep < stepIndex + 1) {
+            const strip = this.graph?.strips.get(track.id);
+            if (strip) {
+              const subOffsetSec = (clipStartStep - stepIndex) * baseStepDur;
+              const clipDurSec = Math.max(0.05, (Number(clip.lengthBars) || 1) * 16 * baseStepDur);
+              const voice = triggerAudioClipSlice(
+                this.ctx,
+                strip.input,
+                clip,
+                playTime + subOffsetSec,
+                0,
+                clipDurSec
+              );
+              this.registerAudioVoice(voice);
+              this.triggeredAudioClipIds.add(clip.id);
+            }
+          }
+          continue;
+        }
+
         const startBar = clip.bar || 0;
         const lenBars = clip.lengthBars || 1;
         if (currentBar >= startBar && currentBar < startBar + lenBars) {
-          const track = (project.tracks || []).find((t) => t.id === clip.trackId);
-          if (track) {
-            const loopSteps = (clip.patternBars || 1) * 16;
-            const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
-            scheduleClipStep(this.ctx, this.graph, track, clip, localStep, playTime, baseStepDur);
-          }
+          const loopSteps = (clip.patternBars || 1) * 16;
+          const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
+          scheduleClipStep(this.ctx, this.graph, track, clip, localStep, playTime, baseStepDur);
         }
       }
 
       this.visualQueue.push({ step: stepIndex, time: playTime });
       this.nextNoteTime += baseStepDur;
 
-      const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
-      if (loopClip) {
-        const startStep = (loopClip.bar || 0) * 16;
-        const endStep = startStep + (loopClip.lengthBars || 1) * 16;
-        const next = stepIndex + 1;
-        this.currentGlobalStep = next >= endStep || next < startStep ? startStep : next;
+      if (this.isRecording) {
+        // Never wrap playhead back to start while actively recording audio!
+        this.currentGlobalStep = stepIndex + 1;
       } else {
-        const totalSongSteps = this.getSongTotalSteps(project);
-        this.currentGlobalStep = (stepIndex + 1) % totalSongSteps;
+        const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
+        if (loopClip) {
+          const startStep = Math.floor((loopClip.bar || 0) * 16);
+          const endStep = startStep + Math.max(1, Math.round((loopClip.lengthBars || 1) * 16));
+          const next = stepIndex + 1;
+          if (next >= endStep || next < startStep) {
+            this.currentGlobalStep = startStep;
+            this.triggeredAudioClipIds.clear();
+          } else {
+            this.currentGlobalStep = next;
+          }
+        } else {
+          const totalSongSteps = this.getSongTotalSteps(project);
+          const next = (stepIndex + 1) % totalSongSteps;
+          if (next === 0) {
+            this.triggeredAudioClipIds.clear();
+          }
+          this.currentGlobalStep = next;
+        }
       }
     }
 
@@ -385,7 +567,7 @@ export async function exportProjectToWav(project) {
 
   let maxBar = 1;
   for (const clip of project.clips || []) {
-    const endBar = (clip.bar || 0) + (clip.lengthBars || 1);
+    const endBar = Math.ceil((Number(clip.bar) || 0) + (Number(clip.lengthBars) || 1));
     if (endBar > maxBar) maxBar = endBar;
   }
   const totalSteps = maxBar * 16;
@@ -402,17 +584,27 @@ export async function exportProjectToWav(project) {
     const stepInBar = s % 16;
 
     for (const clip of project.clips || []) {
+      const track = (project.tracks || []).find((tr) => tr.id === clip.trackId);
+      if (!track || isAudioTimelineClip(track, clip)) continue;
       const startBar = clip.bar || 0;
       const lenBars = clip.lengthBars || 1;
       if (currentBar >= startBar && currentBar < startBar + lenBars) {
-        const track = (project.tracks || []).find((tr) => tr.id === clip.trackId);
-        if (track) {
-          const loopSteps = (clip.patternBars || 1) * 16;
-          const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
-          scheduleClipStep(offlineCtx, graph, track, clip, localStep, t, stepDur);
-        }
+        const loopSteps = (clip.patternBars || 1) * 16;
+        const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
+        scheduleClipStep(offlineCtx, graph, track, clip, localStep, t, stepDur);
       }
     }
+  }
+
+  // Render all Audio Clips onto OfflineAudioContext
+  for (const clip of project.clips || []) {
+    const track = (project.tracks || []).find((tr) => tr.id === clip.trackId);
+    if (!track || !isAudioTimelineClip(track, clip)) continue;
+    const strip = graph.strips.get(track.id);
+    if (!strip) continue;
+    const startSec = 0.05 + (Number(clip.bar) || 0) * 16 * stepDur;
+    const durSec = Math.max(0.05, (Number(clip.lengthBars) || 1) * 16 * stepDur);
+    triggerAudioClipSlice(offlineCtx, strip.input, clip, startSec, 0, durSec);
   }
 
   const rendered = await offlineCtx.startRendering();

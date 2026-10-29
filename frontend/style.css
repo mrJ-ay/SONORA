@@ -1354,3 +1354,88 @@ body {
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
   z-index: 9999;
 }
+
+/* AUDIO TRACK & LIVE RECORDING STUDIO */
+@keyframes recPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.65); }
+  50% { box-shadow: 0 0 12px 2px rgba(255, 71, 87, 0.9); }
+}
+
+.trk-rec-btn {
+  padding: 2px 6px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 92, 92, 0.55);
+  background: rgba(255, 71, 87, 0.14);
+  color: #ff8787;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.trk-rec-btn:hover {
+  background: rgba(255, 71, 87, 0.28);
+  color: #ffffff;
+}
+
+.trk-rec-btn.recording {
+  background: #ff4757;
+  border-color: #ff9aa2;
+  color: #ffffff;
+  animation: recPulse 1.1s infinite;
+}
+
+.rec-studio-box {
+  background: #0b1018;
+  border: 1px solid var(--border-hi);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.input-meter-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #06090e;
+  border: 1px solid #1f2a3d;
+  overflow: hidden;
+}
+
+.input-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #1dd1a1 0%, #ffd166 75%, #ff4757 100%);
+  transition: width 0.05s linear;
+}
+
+.rec-main-btn {
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 92, 92, 0.65);
+  background: linear-gradient(180deg, rgba(255, 71, 87, 0.25), rgba(255, 71, 87, 0.14));
+  color: #ff9aa2;
+  font-size: 0.86rem;
+  font-weight: 800;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.rec-main-btn:hover {
+  background: rgba(255, 71, 87, 0.35);
+  color: #ffffff;
+}
+
+.rec-main-btn.recording {
+  background: #ff4757;
+  border-color: #ffffff;
+  color: #ffffff;
+  animation: recPulse 1.1s infinite;
+}
+

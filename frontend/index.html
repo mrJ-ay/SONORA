@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SONORA · Web Digital Audio Workstation</title>
+  <link rel="stylesheet" href="style.css?v=20261029">
+</head>
+<body>
+  <!-- TOP TRANSPORT BAR -->
+  <header class="transport-bar">
+    <div class="brand-cluster">
+      <div class="logo-mark">S</div>
+      <div class="brand-titles">
+        <strong>SONORA</strong>
+        <input id="projectTitleInput" class="project-title-input" type="text" maxlength="60" value="Neon Drive 1984" aria-label="프로젝트 제목">
+      </div>
+    </div>
+
+    <div class="transport-controls">
+      <div class="mode-switch" role="group" aria-label="재생 모드">
+        <button id="modePatBtn" class="mode-btn" type="button" title="현재 선택된 패턴만 반복 재생">PAT</button>
+        <button id="modeSongBtn" class="mode-btn active" type="button" title="전체 편집기(Playlist) 타임라인 재생">SONG</button>
+      </div>
+
+      <button id="playBtn" class="transport-btn play" type="button" title="재생 / 일시정지 (Space)">▶ PLAY</button>
+      <button id="stopBtn" class="transport-btn stop" type="button" title="정지 및 처음으로">■</button>
+
+      <div class="lcd-box">
+        <span class="lcd-label">BAR : BEAT : STEP</span>
+        <strong id="lcdTime" class="lcd-digits">01 : 01 : 01</strong>
+      </div>
+
+      <label class="param-pill" title="템포 (BPM)">
+        <span>BPM</span>
+        <input id="bpmInput" type="number" min="40" max="240" value="118">
+      </label>
+
+      <label class="param-pill" title="스윙 리듬감 (%)">
+        <span>SWING</span>
+        <input id="swingInput" type="number" min="0" max="60" value="8">
+      </label>
+
+      <button id="metroBtn" class="transport-btn metro" type="button" title="메트로놈 클릭음">⏱ CLICK</button>
+
+      <canvas id="spectrumCanvas" class="spectrum-canvas" width="132" height="34" title="마스터 스펙트럼"></canvas>
+    </div>
+
+    <div class="right-cluster">
+      <select id="demoSelect" class="studio-select" aria-label="데모 및 프리셋 곡">
+        <option value="neondrive">🎵 Demo: Neon Drive 1984</option>
+        <option value="seoultrap">🔥 Demo: Seoul 808 Night</option>
+        <option value="lofidesk">☕ Demo: Lo-Fi Rainy Study</option>
+        <option value="blank">📄 새 빈 프로젝트 (Blank)</option>
+      </select>
+
+      <button id="exportWavBtn" class="studio-btn accent" type="button" title="고음질 16-bit WAV 오디오 추출">⬇ WAV 추출</button>
+      <button id="openCloudBtn" class="studio-btn" type="button">☁ 클라우드 / 공유</button>
+      <a class="studio-link" href="https://oneid-helpdesk.onrender.com/?service=SONORA" target="_blank" rel="noopener">고객센터 ↗</a>
+      <div id="authBox" class="auth-box">
+        <button id="openLoginBtn" class="studio-btn primary" type="button">ONEID 로그인</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- PATTERN BAR & WORKSPACE TABS -->
+  <div class="subbar">
+    <div class="pattern-strip">
+      <span class="strip-label">PATTERNS</span>
+      <div id="patternList" class="pattern-pills"></div>
+      <button id="addPatternBtn" class="mini-btn" type="button" title="새 빈 패턴 추가">+ 패턴</button>
+      <button id="clonePatternBtn" class="mini-btn" type="button" title="현재 패턴 복제">복제</button>
+    </div>
+
+    <div class="view-tabs" role="tablist">
+      <button class="view-tab active" data-view="split" type="button">⚡ 통합 스튜디오</button>
+      <button class="view-tab" data-view="sequencer" type="button">🥁 비트 시퀀서</button>
+      <button class="view-tab" data-view="pianoroll" type="button">🎹 피아노롤</button>
+      <button class="view-tab" data-view="synth" type="button">🎛 신스 · 가상악기</button>
+      <button class="view-tab" data-view="arrangement" type="button">📐 전체 편집기</button>
+      <button class="view-tab" data-view="mixer" type="button">🎚 믹서</button>
+    </div>
+  </div>
+
+  <!-- STUDIO WORKSPACE GRID -->
+  <main id="workspace" class="workspace layout-split">
+    <!-- 1. ARRANGEMENT (전체 편곡 편집기) -->
+    <section id="secArrangement" class="studio-panel panel-arrangement">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="panel-dot" style="background:#54a0ff"></span>
+          <h2>전체 편집기 <small>ARRANGEMENT PLAYLIST</small></h2>
+        </div>
+        <div class="panel-tools">
+          <span class="tool-hint">좌클릭: 선택된 패턴 배치 · 우측 끝 드래그: 길이 조절 · 우클릭: 삭제 · 더블클릭: 패턴 편집</span>
+          <button id="clearArrangementBtn" class="mini-btn" type="button">비우기</button>
+        </div>
+      </div>
+      <div id="arrangementWrap" class="canvas-scroll-wrap arrangement-scroll">
+        <canvas id="arrangementCanvas"></canvas>
+      </div>
+    </section>
+
+    <!-- 2. BEAT SEQUENCER & CHANNEL RACK (비트 시퀀서 + 가상악기 채널 랙) -->
+    <section id="secSequencer" class="studio-panel panel-sequencer">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="panel-dot" style="background:#ff9f43"></span>
+          <h2>비트 시퀀서 &amp; 채널 랙 <small id="seqPatternLabel">CHANNEL RACK</small></h2>
+        </div>
+        <div class="panel-tools">
+          <select id="addChannelPresetSelect" class="mini-select" aria-label="가상악기 추가">
+            <option value="cyberlead">+ 가상악기 추가…</option>
+            <option value="kick808">🥁 808 Sub Kick</option>
+            <option value="snare">🥁 Crispy Snare</option>
+            <option value="clap">🥁 909 Studio Clap</option>
+            <option value="hihat">🥁 Closed Hi-Hat</option>
+            <option value="openhat">🥁 Open Shimmer Hat</option>
+            <option value="subbass">🎸 Analog Reesebass</option>
+            <option value="fmkeys">🎹 Velvet FM Keys</option>
+            <option value="cyberlead">⚡ Neon SuperSaw Lead</option>
+            <option value="lushpad">🌊 Horizon Lush Pad</option>
+            <option value="pluckarp">✨ Crystal Pluck</option>
+          </select>
+          <button id="fillHatBtn" class="mini-btn" type="button" title="선택 채널 2칸 간격 자동 채우기">2스텝 채우기</button>
+          <button id="clearStepsBtn" class="mini-btn" type="button" title="현재 패턴 스텝 초기화">스텝 비우기</button>
+        </div>
+      </div>
+      <div id="channelRackList" class="channel-rack-list"></div>
+    </section>
+
+    <!-- 3. PIANO ROLL (피아노롤) -->
+    <section id="secPianoRoll" class="studio-panel panel-pianoroll">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="panel-dot" style="background:#ff6bcb"></span>
+          <h2>피아노롤 <small id="prTargetLabel">PIANO ROLL</small></h2>
+        </div>
+        <div class="panel-tools">
+          <span class="tool-hint">좌클릭: 노트 입력/이동 · 우측 끝 드래그: 길이 · 우클릭: 삭제 · 키보드 Z~M / Q~U 연주</span>
+          <label class="inline-label">스케일 가이드
+            <select id="scaleSelect" class="mini-select">
+              <option value="minor">A Minor (자연 단음계)</option>
+              <option value="major">C Major (장음계)</option>
+              <option value="pentatonic">Minor Pentatonic</option>
+              <option value="chromatic">Chromatic (전체)</option>
+            </select>
+          </label>
+          <button id="clearNotesBtn" class="mini-btn" type="button">노트 비우기</button>
+        </div>
+      </div>
+      <div id="pianoRollWrap" class="canvas-scroll-wrap pianoroll-scroll">
+        <canvas id="pianoRollCanvas"></canvas>
+      </div>
+    </section>
+
+    <!-- 4. SYNTH & VIRTUAL INSTRUMENT DESIGNER (신스 & 가상악기) -->
+    <section id="secSynth" class="studio-panel panel-synth">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="panel-dot" style="background:#1dd1a1"></span>
+          <h2>신스 &amp; 가상악기 편집기 <small id="synthChannelLabel">SYNTHESIZER</small></h2>
+        </div>
+        <div class="panel-tools">
+          <button id="auditionSynthBtn" class="mini-btn accent" type="button">🔊 사운드 미리듣기 (C4)</button>
+        </div>
+      </div>
+      <div id="synthBody" class="synth-body"></div>
+    </section>
+
+    <!-- 5. STUDIO MIXER (믹서) -->
+    <section id="secMixer" class="studio-panel panel-mixer">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="panel-dot" style="background:#a29bfe"></span>
+          <h2>콘솔 믹서 <small>MULTI-CHANNEL MIXER &amp; FX BUS</small></h2>
+        </div>
+        <div class="panel-tools">
+          <button id="resetSoloMuteBtn" class="mini-btn" type="button">뮤트/솔로 전체 해제</button>
+        </div>
+      </div>
+      <div id="mixerStrips" class="mixer-strips"></div>
+    </section>
+  </main>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast" hidden role="status"></div>
+
+  <!-- CLOUD SAVE / COMMUNITY PROJECTS MODAL -->
+  <div id="cloudModal" class="modal-backdrop" hidden>
+    <div class="modal-card wide" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">SONORA CLOUD &amp; COMMUNITY</span>
+          <h3>프로젝트 클라우드 저장 · 공개 트랙</h3>
+        </div>
+        <button id="closeCloudBtn" class="icon-close" type="button">✕</button>
+      </div>
+
+      <div class="cloud-save-box">
+        <div class="cloud-save-row">
+          <input id="cloudSaveTitle" type="text" maxlength="60" placeholder="저장할 곡 제목">
+          <label class="checkbox-label">
+            <input id="cloudPublicCheck" type="checkbox" checked>
+            커뮤니티 공개
+          </label>
+          <button id="saveCloudBtn" class="studio-btn primary" type="button">☁ 클라우드 저장</button>
+          <button id="saveJsonBtn" class="studio-btn" type="button">💾 파일 백업(.json)</button>
+          <label class="studio-btn file-label">📂 파일 열기<input id="loadJsonInput" type="file" accept=".json" hidden></label>
+        </div>
+        <p id="cloudAuthHint" class="cloud-hint">ONEID 로그인 후 내 곡을 클라우드에 저장하고 다른 유저들과 공유할 수 있습니다.</p>
+      </div>
+
+      <div class="cloud-columns">
+        <div>
+          <h4>🔥 커뮤니티 공개 트랙</h4>
+          <div id="publicProjectsList" class="project-list"></div>
+        </div>
+        <div>
+          <h4>📁 내 클라우드 프로젝트</h4>
+          <div id="myProjectsList" class="project-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ONEID LOGIN MODAL -->
+  <div id="loginModal" class="modal-backdrop" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">SIGN IN WITH ONEID</span>
+          <h3>ONEID 통합 계정 로그인</h3>
+        </div>
+        <button id="closeLoginBtn" class="icon-close" type="button">✕</button>
+      </div>
+      <form id="loginForm" class="login-form">
+        <label>
+          <span>ONEID 아이디</span>
+          <input id="loginUsername" type="text" required autocomplete="username" placeholder="사용자명">
+        </label>
+        <label>
+          <span>비밀번호</span>
+          <input id="loginPassword" type="password" required autocomplete="current-password" placeholder="비밀번호">
+        </label>
+        <p id="loginError" class="login-error" hidden></p>
+        <div class="modal-actions">
+          <a class="studio-link" href="https://oneid-icvq.onrender.com/register.html" target="_blank" rel="noopener">계정 만들기 ↗</a>
+          <button class="studio-btn primary" type="submit">로그인</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="app.js?v=20261029"></script>
+</body>
+</html>

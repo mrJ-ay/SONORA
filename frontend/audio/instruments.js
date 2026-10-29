@@ -1,5 +1,6 @@
-// Virtual Instruments & Drum Kit Synthesis Engine
+// Virtual Instruments, Sampler, SoundFont2 & Drum Kit Synthesis Engine
 // Works identically on live AudioContext and OfflineAudioContext (.wav export)
+import { getSampleAudioBuffer, getSf2ZoneForNote } from "./externalLoader.js";
 
 export const DRUM_ROWS = [
   { key: "kick808", name: "808 Kick", color: "#ff5c5c", engine: "kick808", baseMidi: 36, synth: { decay: 0.36 } },
@@ -103,6 +104,20 @@ export function triggerInstrumentVoice(ctx, destNode, voiceSpec, midi, time, dur
   const vel = Math.max(0.05, Math.min(1.0, velocity));
   const s = voiceSpec.synth || {};
   const engine = voiceSpec.engine || "synth";
+
+  if (voiceSpec.drumSampleId) {
+    const smpBuf = getSampleAudioBuffer(ctx, voiceSpec.drumSampleId);
+    if (smpBuf) {
+      const src = ctx.createBufferSource();
+      src.buffer = smpBuf;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(vel * 0.95, t);
+      src.connect(gain);
+      gain.connect(destNode);
+      src.start(t);
+      return;
+    }
+  }
 
   if (engine === "kick808") {
     const pitchRatio = Math.pow(2, ((midi || 36) - 36) / 12);
@@ -253,6 +268,53 @@ export function triggerInstrumentVoice(ctx, destNode, voiceSpec, midi, time, dur
 
   filter.connect(env);
   env.connect(destNode);
+
+  if (engine === "sampler" && voiceSpec.sampleId) {
+    const smpBuf = getSampleAudioBuffer(ctx, voiceSpec.sampleId);
+    if (smpBuf) {
+      const rootMidi = Number(voiceSpec.rootMidi ?? s.rootMidi ?? 60);
+      const rate = Math.pow(2, ((midi || 60) - rootMidi + detune / 100) / 12);
+      const src = ctx.createBufferSource();
+      src.buffer = smpBuf;
+      src.playbackRate.setValueAtTime(Math.max(0.0625, Math.min(16, rate)), t);
+      if (s.loopSample) {
+        src.loop = true;
+        src.loopStart = Math.max(0, Number(s.trimStart ?? 0) * smpBuf.duration);
+        src.loopEnd = Math.max(src.loopStart + 0.01, Number(s.trimEnd ?? 1) * smpBuf.duration);
+      }
+      const boost = ctx.createGain();
+      boost.gain.setValueAtTime(1.65, t);
+      src.connect(boost);
+      boost.connect(filter);
+      const offsetSec = Math.max(0, Math.min(smpBuf.duration - 0.01, Number(s.trimStart ?? 0) * smpBuf.duration));
+      src.start(t, offsetSec);
+      src.stop(endTime);
+      return;
+    }
+  }
+
+  if (engine === "sf2" && voiceSpec.sf2Id) {
+    const found = getSf2ZoneForNote(ctx, voiceSpec.sf2Id, voiceSpec.sf2InstIndex || 0, midi || 60);
+    if (found) {
+      const { zone, buffer } = found;
+      const rate = Math.pow(2, ((midi || 60) - zone.rootMidi + detune / 100) / 12);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.playbackRate.setValueAtTime(Math.max(0.0625, Math.min(16, rate)), t);
+      if (zone.loop) {
+        src.loop = true;
+        src.loopStart = zone.loopStart;
+        src.loopEnd = zone.loopEnd;
+      }
+      const boost = ctx.createGain();
+      boost.gain.setValueAtTime(1.8, t);
+      src.connect(boost);
+      boost.connect(filter);
+      src.start(t);
+      src.stop(endTime);
+      return;
+    }
+  }
 
   if (engine === "fmkeys") {
     const carrier = ctx.createOscillator();

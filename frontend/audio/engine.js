@@ -106,25 +106,52 @@ function buildAudioGraph(ctx, project, withAnalysers = true) {
   return { masterBus, masterGain, limiter, masterAnalyser, delayNode, strips };
 }
 
+export function getTrackDrumRows(track) {
+  const custom = Array.isArray(track.customDrumRows) ? track.customDrumRows : [];
+  const merged = DRUM_ROWS.map((r) => {
+    const smp = track.drumSamples?.[r.key];
+    return smp ? { ...r, name: smp.name || r.name, drumSampleId: smp.sampleId } : r;
+  });
+  return [...merged, ...custom];
+}
+
 function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurSec) {
   const strip = graph.strips.get(track.id);
   if (!strip) return;
 
   if (track.type === "drumkit") {
     const drumSteps = clip.drumSteps || {};
-    for (const row of DRUM_ROWS) {
+    const subdiv = clip.drumSubdiv === 2 ? 2 : 1; // 1 = 16th, 2 = 32nd (반박 쪼개기)
+    const rows = getTrackDrumRows(track);
+    for (const row of rows) {
       const arr = drumSteps[row.key];
-      if (arr && arr[localStep]) {
-        const vel = typeof arr[localStep] === "number" ? arr[localStep] : 0.85;
-        triggerInstrumentVoice(ctx, strip.input, row, row.baseMidi, stepTime, stepDurSec * 0.9, vel);
+      if (!arr) continue;
+      for (let sub = 0; sub < subdiv; sub++) {
+        const idx = localStep * subdiv + sub;
+        if (arr[idx]) {
+          const vel = typeof arr[idx] === "number" ? arr[idx] : 0.85;
+          const hitTime = stepTime + (sub / subdiv) * stepDurSec;
+          triggerInstrumentVoice(ctx, strip.input, row, row.baseMidi || 36, hitTime, (stepDurSec / subdiv) * 0.9, vel);
+        }
       }
     }
   } else {
     const notes = clip.notes || [];
+    const loopSteps = (clip.patternBars || 1) * 16;
     for (const n of notes) {
-      if (Math.round(n.start) === localStep) {
-        const durSec = Math.max(0.25, n.length || 1) * stepDurSec * 0.95;
-        triggerInstrumentVoice(ctx, strip.input, track, n.midi, stepTime, durSec, n.velocity ?? 0.82);
+      const nStart = ((Number(n.start) || 0) % loopSteps + loopSteps) % loopSteps;
+      if (Math.floor(nStart) === localStep) {
+        const subStepOffsetSec = (nStart - localStep) * stepDurSec;
+        const durSec = Math.max(0.06, Number(n.length) || 0.5) * stepDurSec * 0.96;
+        triggerInstrumentVoice(
+          ctx,
+          strip.input,
+          track,
+          n.midi,
+          stepTime + subStepOffsetSec,
+          durSec,
+          n.velocity ?? 0.82
+        );
       }
     }
   }
@@ -209,8 +236,9 @@ export class SonoraEngine {
     this.ensureContext();
     const strip = this.graph?.strips.get(track.id);
     const dest = strip ? strip.input : this.graph.masterBus;
-    const row = DRUM_ROWS.find((r) => r.key === drumKey) || DRUM_ROWS[0];
-    triggerInstrumentVoice(this.ctx, dest, row, row.baseMidi, this.ctx.currentTime, 0.2, 0.88);
+    const rows = getTrackDrumRows(track);
+    const row = rows.find((r) => r.key === drumKey) || rows[0];
+    triggerInstrumentVoice(this.ctx, dest, row, row.baseMidi || 36, this.ctx.currentTime, 0.2, 0.88);
   }
 
   getSongTotalSteps(project) {

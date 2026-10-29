@@ -36,6 +36,67 @@ export function createInstrumentTrack(presetId = "fmkeys", customId, overrides =
   };
 }
 
+export function createSamplerTrack({ sampleId, name }) {
+  return {
+    id: `trk_smp_${Math.random().toString(36).slice(2, 6)}`,
+    type: "instrument",
+    engine: "sampler",
+    sampleId,
+    rootMidi: 60,
+    name: name || "External Sampler",
+    category: "SAMPLER",
+    color: "#1dd1a1",
+    baseMidi: 60,
+    volume: 0.85,
+    pan: 0,
+    muted: false,
+    solo: false,
+    reverbSend: 0.16,
+    delaySend: 0.06,
+    synth: {
+      cutoff: 12000,
+      resonance: 1.0,
+      attack: 0.004,
+      decay: 0.35,
+      sustain: 0.85,
+      release: 0.22,
+      detune: 0,
+      loopSample: false,
+      trimStart: 0,
+      trimEnd: 1,
+    },
+  };
+}
+
+export function createSf2Track({ sf2Id, sf2InstIndex = 0, name }) {
+  return {
+    id: `trk_sf2_${Math.random().toString(36).slice(2, 6)}`,
+    type: "instrument",
+    engine: "sf2",
+    sf2Id,
+    sf2InstIndex,
+    name: name || "SoundFont Instrument",
+    category: "SF2",
+    color: "#ffd166",
+    baseMidi: 60,
+    volume: 0.85,
+    pan: 0,
+    muted: false,
+    solo: false,
+    reverbSend: 0.2,
+    delaySend: 0.08,
+    synth: {
+      cutoff: 14000,
+      resonance: 0.9,
+      attack: 0.005,
+      decay: 0.4,
+      sustain: 0.82,
+      release: 0.28,
+      detune: 0,
+    },
+  };
+}
+
 export function createEmptyClip(track, bar = 0, lengthBars = 2) {
   const drumSteps = {};
   if (track.type === "drumkit") {

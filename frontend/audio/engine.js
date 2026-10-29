@@ -1,4 +1,4 @@
-import { triggerInstrumentVoice } from "./instruments.js";
+import { DRUM_ROWS, triggerInstrumentVoice } from "./instruments.js";
 
 function createImpulseResponse(ctx, seconds = 1.9, decay = 2.6) {
   const length = Math.floor(ctx.sampleRate * seconds);
@@ -25,7 +25,6 @@ function buildAudioGraph(ctx, project, withAnalysers = true) {
   limiter.attack.value = 0.003;
   limiter.release.value = 0.15;
 
-  // Reverb Bus
   const reverbNode = ctx.createConvolver();
   reverbNode.buffer = createImpulseResponse(ctx, 1.8, 2.5);
   const reverbReturn = ctx.createGain();
@@ -33,10 +32,9 @@ function buildAudioGraph(ctx, project, withAnalysers = true) {
   reverbNode.connect(reverbReturn);
   reverbReturn.connect(masterBus);
 
-  // Stereo Ping-Pong / Echo Delay Bus
   const delayNode = ctx.createDelay(2.0);
   const beatSec = 60 / (project.bpm || 120);
-  delayNode.delayTime.value = beatSec * 0.75; // Dotted 8th feel
+  delayNode.delayTime.value = beatSec * 0.75;
   const delayFeedback = ctx.createGain();
   delayFeedback.gain.value = 0.34;
   const delayFilter = ctx.createBiquadFilter();
@@ -65,22 +63,23 @@ function buildAudioGraph(ctx, project, withAnalysers = true) {
   }
 
   const strips = new Map();
-  const anySolo = project.channels.some((c) => c.solo);
+  const tracks = project.tracks || [];
+  const anySolo = tracks.some((t) => t.solo);
 
-  for (const ch of project.channels) {
+  for (const trk of tracks) {
     const input = ctx.createGain();
     const panner = ctx.createStereoPanner();
-    panner.pan.value = Math.max(-1, Math.min(1, ch.pan ?? 0));
+    panner.pan.value = Math.max(-1, Math.min(1, trk.pan ?? 0));
 
     const fader = ctx.createGain();
-    const isAudible = anySolo ? Boolean(ch.solo) : !ch.muted;
-    fader.gain.value = isAudible ? (ch.volume ?? 0.8) : 0.0;
+    const audible = anySolo ? Boolean(trk.solo) : !trk.muted;
+    fader.gain.value = audible ? (trk.volume ?? 0.8) : 0.0;
 
     const revSend = ctx.createGain();
-    revSend.gain.value = isAudible ? (ch.reverbSend ?? 0.12) : 0.0;
+    revSend.gain.value = audible ? (trk.reverbSend ?? 0.12) : 0.0;
 
     const dlySend = ctx.createGain();
-    dlySend.gain.value = isAudible ? (ch.delaySend ?? 0.06) : 0.0;
+    dlySend.gain.value = audible ? (trk.delaySend ?? 0.06) : 0.0;
 
     let analyser = null;
     input.connect(panner);
@@ -101,39 +100,31 @@ function buildAudioGraph(ctx, project, withAnalysers = true) {
     fader.connect(dlySend);
     dlySend.connect(delayNode);
 
-    strips.set(ch.id, { input, panner, fader, revSend, dlySend, analyser });
+    strips.set(trk.id, { input, panner, fader, revSend, dlySend, analyser });
   }
 
-  return {
-    masterBus,
-    masterGain,
-    limiter,
-    masterAnalyser,
-    delayNode,
-    strips,
-  };
+  return { masterBus, masterGain, limiter, masterAnalyser, delayNode, strips };
 }
 
-function schedulePatternStep(ctx, graph, project, pattern, localStep, stepTime, stepDurSec) {
-  for (const ch of project.channels) {
-    const strip = graph.strips.get(ch.id);
-    if (!strip) continue;
+function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurSec) {
+  const strip = graph.strips.get(track.id);
+  if (!strip) return;
 
-    // 1. Trigger Beat Sequencer step if active
-    const stepsArr = pattern.steps?.[ch.id];
-    if (stepsArr && stepsArr[localStep]) {
-      const vel = typeof stepsArr[localStep] === "number" ? stepsArr[localStep] : 0.85;
-      triggerInstrumentVoice(ctx, strip.input, ch, ch.baseMidi || 36, stepTime, stepDurSec * 0.9, vel);
+  if (track.type === "drumkit") {
+    const drumSteps = clip.drumSteps || {};
+    for (const row of DRUM_ROWS) {
+      const arr = drumSteps[row.key];
+      if (arr && arr[localStep]) {
+        const vel = typeof arr[localStep] === "number" ? arr[localStep] : 0.85;
+        triggerInstrumentVoice(ctx, strip.input, row, row.baseMidi, stepTime, stepDurSec * 0.9, vel);
+      }
     }
-
-    // 2. Trigger Piano Roll notes starting at localStep
-    const notes = pattern.notes?.[ch.id];
-    if (Array.isArray(notes)) {
-      for (const n of notes) {
-        if (Math.round(n.start) === localStep) {
-          const durSec = Math.max(0.25, n.length || 1) * stepDurSec * 0.95;
-          triggerInstrumentVoice(ctx, strip.input, ch, n.midi, stepTime, durSec, n.velocity ?? 0.82);
-        }
+  } else {
+    const notes = clip.notes || [];
+    for (const n of notes) {
+      if (Math.round(n.start) === localStep) {
+        const durSec = Math.max(0.25, n.length || 1) * stepDurSec * 0.95;
+        triggerInstrumentVoice(ctx, strip.input, track, n.midi, stepTime, durSec, n.velocity ?? 0.82);
       }
     }
   }
@@ -146,7 +137,7 @@ export class SonoraEngine {
     this.ctx = null;
     this.graph = null;
     this.isPlaying = false;
-    this.mode = "pattern"; // "pattern" | "song"
+    this.loopClipId = null; // If set, loops just that clip; otherwise plays full Arrangement
     this.metronome = false;
 
     this.currentGlobalStep = 0;
@@ -170,63 +161,70 @@ export class SonoraEngine {
   rebuildMixGraph() {
     if (!this.ctx) return;
     const project = this.getProject();
+    const tracks = project.tracks || [];
     if (!this.graph) {
       this.graph = buildAudioGraph(this.ctx, project, true);
       return;
     }
 
-    // Ensure any newly added channel gets a strip; sync mixer gains/pans cleanly
-    const anySolo = project.channels.some((c) => c.solo);
-    this.graph.masterGain.gain.setTargetAtTime(project.masterVolume ?? 0.88, this.ctx.currentTime, 0.015);
-    const beatSec = 60 / (project.bpm || 120);
-    this.graph.delayNode.delayTime.setTargetAtTime(beatSec * 0.75, this.ctx.currentTime, 0.03);
-
-    const existingIds = new Set(project.channels.map((c) => c.id));
-    for (const [id, strip] of this.graph.strips.entries()) {
-      if (!existingIds.has(id)) {
-        try { strip.fader.disconnect(); } catch {}
-        this.graph.strips.delete(id);
-      }
+    const existingIds = new Set(tracks.map((t) => t.id));
+    if (existingIds.size !== this.graph.strips.size || tracks.some((t) => !this.graph.strips.has(t.id))) {
+      try { this.graph.masterGain.disconnect(); } catch {}
+      this.graph = buildAudioGraph(this.ctx, project, true);
+      return;
     }
 
-    for (const ch of project.channels) {
-      if (!this.graph.strips.has(ch.id)) {
-        // Rebuild full graph when channel topology changes
-        try { this.graph.masterGain.disconnect(); } catch {}
-        this.graph = buildAudioGraph(this.ctx, project, true);
-        return;
-      }
-      const strip = this.graph.strips.get(ch.id);
-      const audible = anySolo ? Boolean(ch.solo) : !ch.muted;
-      const now = this.ctx.currentTime;
-      strip.panner.pan.setTargetAtTime(Math.max(-1, Math.min(1, ch.pan ?? 0)), now, 0.015);
-      strip.fader.gain.setTargetAtTime(audible ? (ch.volume ?? 0.8) : 0, now, 0.015);
-      strip.revSend.gain.setTargetAtTime(audible ? (ch.reverbSend ?? 0.12) : 0, now, 0.015);
-      strip.dlySend.gain.setTargetAtTime(audible ? (ch.delaySend ?? 0.06) : 0, now, 0.015);
+    const anySolo = tracks.some((t) => t.solo);
+    const now = this.ctx.currentTime;
+    this.graph.masterGain.gain.setTargetAtTime(project.masterVolume ?? 0.88, now, 0.015);
+    const beatSec = 60 / (project.bpm || 120);
+    this.graph.delayNode.delayTime.setTargetAtTime(beatSec * 0.75, now, 0.03);
+
+    for (const trk of tracks) {
+      const strip = this.graph.strips.get(trk.id);
+      if (!strip) continue;
+      const audible = anySolo ? Boolean(trk.solo) : !trk.muted;
+      strip.panner.pan.setTargetAtTime(Math.max(-1, Math.min(1, trk.pan ?? 0)), now, 0.015);
+      strip.fader.gain.setTargetAtTime(audible ? (trk.volume ?? 0.8) : 0, now, 0.015);
+      strip.revSend.gain.setTargetAtTime(audible ? (trk.reverbSend ?? 0.12) : 0, now, 0.015);
+      strip.dlySend.gain.setTargetAtTime(audible ? (trk.delaySend ?? 0.06) : 0, now, 0.015);
     }
   }
 
-  previewNote(channel, midi, durationSec = 0.28, velocity = 0.85) {
+  previewTrackNote(track, midi, durationSec = 0.26, velocity = 0.85) {
+    if (!track) return;
     this.ensureContext();
-    const strip = this.graph?.strips.get(channel.id);
+    const strip = this.graph?.strips.get(track.id);
     const dest = strip ? strip.input : this.graph.masterBus;
-    triggerInstrumentVoice(this.ctx, dest, channel, midi, this.ctx.currentTime, durationSec, velocity);
+    if (track.type === "drumkit") {
+      const drumRow = DRUM_ROWS.find((d) => d.baseMidi === midi) || DRUM_ROWS[0];
+      triggerInstrumentVoice(this.ctx, dest, drumRow, drumRow.baseMidi, this.ctx.currentTime, durationSec, velocity);
+    } else {
+      triggerInstrumentVoice(this.ctx, dest, track, midi, this.ctx.currentTime, durationSec, velocity);
+    }
+  }
+
+  previewDrumRow(track, drumKey) {
+    if (!track) return;
+    this.ensureContext();
+    const strip = this.graph?.strips.get(track.id);
+    const dest = strip ? strip.input : this.graph.masterBus;
+    const row = DRUM_ROWS.find((r) => r.key === drumKey) || DRUM_ROWS[0];
+    triggerInstrumentVoice(this.ctx, dest, row, row.baseMidi, this.ctx.currentTime, 0.2, 0.88);
   }
 
   getSongTotalSteps(project) {
     let maxBar = 4;
-    for (const clip of project.arrangement || []) {
+    for (const clip of project.clips || []) {
       const endBar = (clip.bar || 0) + (clip.lengthBars || 1);
       if (endBar > maxBar) maxBar = endBar;
     }
     return maxBar * 16;
   }
 
-  start(mode) {
-    if (mode) this.mode = mode;
+  start() {
     this.ensureContext();
     if (this.isPlaying) return;
-
     this.isPlaying = true;
     this.visualQueue = [];
     this.nextNoteTime = this.ctx.currentTime + 0.04;
@@ -241,8 +239,10 @@ export class SonoraEngine {
     }
     this.visualQueue = [];
     if (resetToZero) {
-      this.currentGlobalStep = 0;
-      this.displayGlobalStep = 0;
+      const project = this.getProject();
+      const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
+      this.currentGlobalStep = loopClip ? (loopClip.bar || 0) * 16 : 0;
+      this.displayGlobalStep = this.currentGlobalStep;
     }
     if (this.onTick) this.onTick(this.displayGlobalStep, false);
   }
@@ -270,7 +270,7 @@ export class SonoraEngine {
     if (!this.isPlaying || !this.ctx) return;
     const project = this.getProject();
     const bpm = Math.max(40, Math.min(240, project.bpm || 120));
-    const baseStepDur = 60 / bpm / 4; // 16th note
+    const baseStepDur = 60 / bpm / 4;
     const swing = Math.max(0, Math.min(0.6, (project.swing || 0) / 100));
 
     while (this.nextNoteTime < this.ctx.currentTime + 0.12) {
@@ -282,42 +282,34 @@ export class SonoraEngine {
         this.playMetronomeClick(playTime, stepIndex % 16 === 0);
       }
 
-      if (this.mode === "pattern") {
-        const pat = project.patterns.find((p) => p.id === project.activePatternId) || project.patterns[0];
-        if (pat) {
-          const patSteps = pat.lengthSteps || 16;
-          const localStep = stepIndex % patSteps;
-          schedulePatternStep(this.ctx, this.graph, project, pat, localStep, playTime, baseStepDur);
-        }
-      } else {
-        // SONG Mode: check arrangement clips active at current bar
-        const currentBar = Math.floor(stepIndex / 16);
-        const stepInBar = stepIndex % 16;
-        for (const clip of project.arrangement || []) {
-          const startBar = clip.bar || 0;
-          const lenBars = clip.lengthBars || 1;
-          if (currentBar >= startBar && currentBar < startBar + lenBars) {
-            const pat = project.patterns.find((p) => p.id === clip.patternId);
-            if (pat) {
-              const patSteps = pat.lengthSteps || 16;
-              const offsetStep = ((currentBar - startBar) * 16 + stepInBar) % patSteps;
-              schedulePatternStep(this.ctx, this.graph, project, pat, offsetStep, playTime, baseStepDur);
-            }
+      const currentBar = Math.floor(stepIndex / 16);
+      const stepInBar = stepIndex % 16;
+
+      for (const clip of project.clips || []) {
+        const startBar = clip.bar || 0;
+        const lenBars = clip.lengthBars || 1;
+        if (currentBar >= startBar && currentBar < startBar + lenBars) {
+          const track = (project.tracks || []).find((t) => t.id === clip.trackId);
+          if (track) {
+            const loopSteps = (clip.patternBars || 1) * 16;
+            const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
+            scheduleClipStep(this.ctx, this.graph, track, clip, localStep, playTime, baseStepDur);
           }
         }
       }
 
       this.visualQueue.push({ step: stepIndex, time: playTime });
-
-      // Advance step
       this.nextNoteTime += baseStepDur;
-      if (this.mode === "pattern") {
-        const pat = project.patterns.find((p) => p.id === project.activePatternId) || project.patterns[0];
-        const patSteps = pat?.lengthSteps || 16;
-        this.currentGlobalStep = (this.currentGlobalStep + 1) % patSteps;
+
+      const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
+      if (loopClip) {
+        const startStep = (loopClip.bar || 0) * 16;
+        const endStep = startStep + (loopClip.lengthBars || 1) * 16;
+        const next = stepIndex + 1;
+        this.currentGlobalStep = next >= endStep || next < startStep ? startStep : next;
       } else {
         const totalSongSteps = this.getSongTotalSteps(project);
-        this.currentGlobalStep = (this.currentGlobalStep + 1) % totalSongSteps;
+        this.currentGlobalStep = (stepIndex + 1) % totalSongSteps;
       }
     }
 
@@ -334,8 +326,8 @@ export class SonoraEngine {
     return this.displayGlobalStep;
   }
 
-  getChannelPeak(channelId) {
-    const strip = this.graph?.strips.get(channelId);
+  getTrackPeak(trackId) {
+    const strip = this.graph?.strips.get(trackId);
     if (!strip?.analyser) return 0;
     const buf = new Uint8Array(strip.analyser.fftSize);
     strip.analyser.getByteTimeDomainData(buf);
@@ -355,53 +347,39 @@ export class SonoraEngine {
   }
 }
 
-// Offline .WAV Exporter
-export async function exportProjectToWav(project, mode = "song") {
+export async function exportProjectToWav(project) {
   const sampleRate = 44100;
   const bpm = Math.max(40, Math.min(240, project.bpm || 120));
   const stepDur = 60 / bpm / 4;
   const swing = Math.max(0, Math.min(0.6, (project.swing || 0) / 100));
 
-  let totalSteps = 16;
-  if (mode === "pattern") {
-    const pat = project.patterns.find((p) => p.id === project.activePatternId) || project.patterns[0];
-    totalSteps = (pat?.lengthSteps || 16) * 2; // Render 2 loops of the pattern
-  } else {
-    let maxBar = 1;
-    for (const clip of project.arrangement || []) {
-      const endBar = (clip.bar || 0) + (clip.lengthBars || 1);
-      if (endBar > maxBar) maxBar = endBar;
-    }
-    totalSteps = maxBar * 16;
+  let maxBar = 1;
+  for (const clip of project.clips || []) {
+    const endBar = (clip.bar || 0) + (clip.lengthBars || 1);
+    if (endBar > maxBar) maxBar = endBar;
   }
-
+  const totalSteps = maxBar * 16;
   const tailSec = 1.6;
   const totalSec = totalSteps * stepDur + tailSec;
+
   const offlineCtx = new OfflineAudioContext(2, Math.ceil(totalSec * sampleRate), sampleRate);
   const graph = buildAudioGraph(offlineCtx, project, false);
 
   for (let s = 0; s < totalSteps; s++) {
     const swingOffset = s % 2 === 1 ? stepDur * swing * 0.5 : 0;
     const t = 0.05 + s * stepDur + swingOffset;
+    const currentBar = Math.floor(s / 16);
+    const stepInBar = s % 16;
 
-    if (mode === "pattern") {
-      const pat = project.patterns.find((p) => p.id === project.activePatternId) || project.patterns[0];
-      if (pat) {
-        const localStep = s % (pat.lengthSteps || 16);
-        schedulePatternStep(offlineCtx, graph, project, pat, localStep, t, stepDur);
-      }
-    } else {
-      const currentBar = Math.floor(s / 16);
-      const stepInBar = s % 16;
-      for (const clip of project.arrangement || []) {
-        const startBar = clip.bar || 0;
-        const lenBars = clip.lengthBars || 1;
-        if (currentBar >= startBar && currentBar < startBar + lenBars) {
-          const pat = project.patterns.find((p) => p.id === clip.patternId);
-          if (pat) {
-            const localStep = ((currentBar - startBar) * 16 + stepInBar) % (pat.lengthSteps || 16);
-            schedulePatternStep(offlineCtx, graph, project, pat, localStep, t, stepDur);
-          }
+    for (const clip of project.clips || []) {
+      const startBar = clip.bar || 0;
+      const lenBars = clip.lengthBars || 1;
+      if (currentBar >= startBar && currentBar < startBar + lenBars) {
+        const track = (project.tracks || []).find((tr) => tr.id === clip.trackId);
+        if (track) {
+          const loopSteps = (clip.patternBars || 1) * 16;
+          const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
+          scheduleClipStep(offlineCtx, graph, track, clip, localStep, t, stepDur);
         }
       }
     }
@@ -430,7 +408,7 @@ function audioBufferToWavBlob(buffer) {
   writeStr(8, "WAVE");
   writeStr(12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * blockAlign, true);
@@ -450,6 +428,5 @@ function audioBufferToWavBlob(buffer) {
       offset += 2;
     }
   }
-
   return new Blob([arrayBuffer], { type: "audio/wav" });
 }

@@ -1,61 +1,15 @@
-// Virtual Instruments & Polyphonic Web Audio Synthesizer
-// Works identically on both live AudioContext and OfflineAudioContext (for .wav export)
+// Virtual Instruments & Drum Kit Synthesis Engine
+// Works identically on live AudioContext and OfflineAudioContext (.wav export)
+
+export const DRUM_ROWS = [
+  { key: "kick808", name: "808 Kick", color: "#ff5c5c", engine: "kick808", baseMidi: 36, synth: { decay: 0.36 } },
+  { key: "snare",   name: "Crispy Snare", color: "#ff9f43", engine: "snare", baseMidi: 38, synth: { cutoff: 3400, decay: 0.19 } },
+  { key: "clap",    name: "909 Clap", color: "#feca57", engine: "clap", baseMidi: 39, synth: { cutoff: 2200, decay: 0.22 } },
+  { key: "hihat",   name: "Closed Hat", color: "#1dd1a1", engine: "hihat", baseMidi: 42, synth: { cutoff: 8200, decay: 0.065 } },
+  { key: "openhat", name: "Open Hat", color: "#00d2d3", engine: "openhat", baseMidi: 46, synth: { cutoff: 7600, decay: 0.32 } },
+];
 
 export const INSTRUMENT_PRESETS = [
-  {
-    id: "kick808",
-    name: "808 Sub Kick",
-    category: "Drum",
-    color: "#ff5c5c",
-    engine: "kick808",
-    baseMidi: 36,
-    synth: { cutoff: 400, resonance: 1.2, attack: 0.002, decay: 0.36, sustain: 0, release: 0.08, detune: 0, subMix: 0.5, fmAmount: 0 },
-  },
-  {
-    id: "snare",
-    name: "Crispy Snare",
-    category: "Drum",
-    color: "#ff9f43",
-    engine: "snare",
-    baseMidi: 38,
-    synth: { cutoff: 3800, resonance: 1.5, attack: 0.001, decay: 0.19, sustain: 0, release: 0.05, detune: 0, subMix: 0, fmAmount: 0 },
-  },
-  {
-    id: "clap",
-    name: "909 Studio Clap",
-    category: "Drum",
-    color: "#feca57",
-    engine: "clap",
-    baseMidi: 39,
-    synth: { cutoff: 2600, resonance: 2.2, attack: 0.001, decay: 0.22, sustain: 0, release: 0.06, detune: 0, subMix: 0, fmAmount: 0 },
-  },
-  {
-    id: "hihat",
-    name: "Closed Hi-Hat",
-    category: "Drum",
-    color: "#1dd1a1",
-    engine: "hihat",
-    baseMidi: 42,
-    synth: { cutoff: 8500, resonance: 1.0, attack: 0.001, decay: 0.065, sustain: 0, release: 0.02, detune: 0, subMix: 0, fmAmount: 0 },
-  },
-  {
-    id: "openhat",
-    name: "Open Shimmer Hat",
-    category: "Drum",
-    color: "#00d2d3",
-    engine: "openhat",
-    baseMidi: 46,
-    synth: { cutoff: 7800, resonance: 1.4, attack: 0.002, decay: 0.32, sustain: 0, release: 0.08, detune: 0, subMix: 0, fmAmount: 0 },
-  },
-  {
-    id: "subbass",
-    name: "Analog Reesebass",
-    category: "Bass",
-    color: "#54a0ff",
-    engine: "synth",
-    baseMidi: 36,
-    synth: { waveform: "sawtooth", cutoff: 520, resonance: 4.5, attack: 0.008, decay: 0.24, sustain: 0.65, release: 0.12, detune: 11, subMix: 0.65, fmAmount: 0 },
-  },
   {
     id: "fmkeys",
     name: "Velvet FM Keys",
@@ -75,6 +29,15 @@ export const INSTRUMENT_PRESETS = [
     synth: { waveform: "sawtooth", cutoff: 4200, resonance: 3.2, attack: 0.012, decay: 0.28, sustain: 0.72, release: 0.22, detune: 18, subMix: 0.25, fmAmount: 0 },
   },
   {
+    id: "subbass",
+    name: "Analog Reesebass",
+    category: "Bass",
+    color: "#54a0ff",
+    engine: "synth",
+    baseMidi: 36,
+    synth: { waveform: "sawtooth", cutoff: 520, resonance: 4.5, attack: 0.008, decay: 0.24, sustain: 0.65, release: 0.12, detune: 11, subMix: 0.65, fmAmount: 0 },
+  },
+  {
     id: "lushpad",
     name: "Horizon Lush Pad",
     category: "Pad",
@@ -86,11 +49,29 @@ export const INSTRUMENT_PRESETS = [
   {
     id: "pluckarp",
     name: "Crystal Pluck",
-    category: "Synth",
+    category: "Pluck",
     color: "#badc58",
     engine: "fmkeys",
     baseMidi: 60,
     synth: { waveform: "triangle", cutoff: 5200, resonance: 2.4, attack: 0.003, decay: 0.22, sustain: 0.08, release: 0.18, detune: 7, subMix: 0.1, fmAmount: 3.5 },
+  },
+  {
+    id: "acidbass",
+    name: "303 Acid Bass",
+    category: "Bass",
+    color: "#feca57",
+    engine: "synth",
+    baseMidi: 36,
+    synth: { waveform: "square", cutoff: 950, resonance: 9.5, attack: 0.004, decay: 0.2, sustain: 0.25, release: 0.09, detune: 4, subMix: 0.3, fmAmount: 0 },
+  },
+  {
+    id: "chiptune",
+    name: "8-Bit Retro Pulse",
+    category: "Synth",
+    color: "#ff9f43",
+    engine: "synth",
+    baseMidi: 60,
+    synth: { waveform: "square", cutoff: 6500, resonance: 1.0, attack: 0.003, decay: 0.16, sustain: 0.5, release: 0.08, detune: 2, subMix: 0, fmAmount: 0 },
   },
 ];
 
@@ -117,11 +98,11 @@ export function getNoiseBuffer(ctx) {
   return buffer;
 }
 
-export function triggerInstrumentVoice(ctx, destNode, channel, midi, time, durationSec = 0.2, velocity = 0.85) {
+export function triggerInstrumentVoice(ctx, destNode, voiceSpec, midi, time, durationSec = 0.2, velocity = 0.85) {
   const t = Math.max(ctx.currentTime || 0, time);
   const vel = Math.max(0.05, Math.min(1.0, velocity));
-  const s = channel.synth || {};
-  const engine = channel.engine || "synth";
+  const s = voiceSpec.synth || {};
+  const engine = voiceSpec.engine || "synth";
 
   if (engine === "kick808") {
     const pitchRatio = Math.pow(2, ((midi || 36) - 36) / 12);
@@ -173,10 +154,9 @@ export function triggerInstrumentVoice(ctx, destNode, channel, midi, time, durat
 
     const body = ctx.createOscillator();
     const bGain = ctx.createGain();
-    const pitchRatio = Math.pow(2, ((midi || 38) - 38) / 12);
     body.type = "triangle";
-    body.frequency.setValueAtTime(210 * pitchRatio, t);
-    body.frequency.exponentialRampToValueAtTime(115 * pitchRatio, t + 0.07);
+    body.frequency.setValueAtTime(210, t);
+    body.frequency.exponentialRampToValueAtTime(115, t + 0.07);
     bGain.gain.setValueAtTime(vel * 0.55, t);
     bGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
 
@@ -204,8 +184,6 @@ export function triggerInstrumentVoice(ctx, destNode, channel, midi, time, durat
     bp.Q.setValueAtTime(1.8, t);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, t);
-    // Triple micro-burst for authentic 909 clap
     gain.gain.setValueAtTime(vel * 0.65, t);
     gain.gain.exponentialRampToValueAtTime(0.08, t + 0.010);
     gain.gain.setValueAtTime(vel * 0.65, t + 0.012);
@@ -244,7 +222,7 @@ export function triggerInstrumentVoice(ctx, destNode, channel, midi, time, durat
     return;
   }
 
-  // Melodic Engines: "synth" (Dual-Osc + Sub) & "fmkeys" (2-Op FM)
+  // Melodic Engines
   const freq = midiToFreq(midi || 60);
   const attack = Math.max(0.002, Number(s.attack ?? 0.01));
   const decay = Math.max(0.02, Number(s.decay ?? 0.25));
@@ -301,7 +279,6 @@ export function triggerInstrumentVoice(ctx, destNode, channel, midi, time, durat
     return;
   }
 
-  // Dual detuned oscillator + Sub-oscillator synth
   const wave = s.waveform || "sawtooth";
   const osc1 = ctx.createOscillator();
   const osc2 = ctx.createOscillator();

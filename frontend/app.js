@@ -1,21 +1,27 @@
-import { INSTRUMENT_PRESETS } from "./audio/instruments.js";
+import { DRUM_ROWS, INSTRUMENT_PRESETS } from "./audio/instruments.js";
 import { SonoraEngine, exportProjectToWav } from "./audio/engine.js";
-import { DEMO_PROJECTS, cloneChannelFromPreset } from "./state/demos.js";
+import {
+  DEMO_PROJECTS,
+  createDrumTrack,
+  createInstrumentTrack,
+  createEmptyClip,
+} from "./state/demos.js";
 import { PianoRollView } from "./ui/pianoRoll.js";
 import { ArrangementView } from "./ui/arrangement.js";
 
 const TOKEN_KEY = "sonora_oneid_token";
-const LOCAL_AUTOSAVE_KEY = "sonora_autosave_v1";
+const LOCAL_AUTOSAVE_KEY = "sonora_autosave_v2";
 
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let currentUser = null;
 let project = DEMO_PROJECTS.neondrive();
-let activeView = "split";
+let selectedClipId = project.clips?.[0]?.id || null;
+let editingTrackId = null;
+let editingClipId = null;
+let synthTargetTrackId = null;
 
 // DOM Elements
 const projectTitleInput = document.querySelector("#projectTitleInput");
-const modePatBtn = document.querySelector("#modePatBtn");
-const modeSongBtn = document.querySelector("#modeSongBtn");
 const playBtn = document.querySelector("#playBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const lcdTime = document.querySelector("#lcdTime");
@@ -30,41 +36,44 @@ const exportWavBtn = document.querySelector("#exportWavBtn");
 const openCloudBtn = document.querySelector("#openCloudBtn");
 const authBox = document.querySelector("#authBox");
 
-const patternListEl = document.querySelector("#patternList");
-const addPatternBtn = document.querySelector("#addPatternBtn");
-const clonePatternBtn = document.querySelector("#clonePatternBtn");
-const viewTabs = document.querySelectorAll(".view-tab");
-const workspaceEl = document.querySelector("#workspace");
-
-const panels = {
-  arrangement: document.querySelector("#secArrangement"),
-  sequencer: document.querySelector("#secSequencer"),
-  pianoroll: document.querySelector("#secPianoRoll"),
-  synth: document.querySelector("#secSynth"),
-  mixer: document.querySelector("#secMixer"),
-};
-
-const channelRackList = document.querySelector("#channelRackList");
-const seqPatternLabel = document.querySelector("#seqPatternLabel");
-const addChannelPresetSelect = document.querySelector("#addChannelPresetSelect");
-const fillHatBtn = document.querySelector("#fillHatBtn");
-const clearStepsBtn = document.querySelector("#clearStepsBtn");
-
-const prTargetLabel = document.querySelector("#prTargetLabel");
-const scaleSelect = document.querySelector("#scaleSelect");
-const clearNotesBtn = document.querySelector("#clearNotesBtn");
-const clearArrangementBtn = document.querySelector("#clearArrangementBtn");
-
-const synthChannelLabel = document.querySelector("#synthChannelLabel");
-const synthBody = document.querySelector("#synthBody");
-const auditionSynthBtn = document.querySelector("#auditionSynthBtn");
+const addDrumTrackBtn = document.querySelector("#addDrumTrackBtn");
+const addInstTrackSelect = document.querySelector("#addInstTrackSelect");
+const trackHeadersList = document.querySelector("#trackHeadersList");
+const arrangementWrap = document.querySelector("#arrangementWrap");
 
 const mixerStripsEl = document.querySelector("#mixerStrips");
 const resetSoloMuteBtn = document.querySelector("#resetSoloMuteBtn");
 
-const toastEl = document.querySelector("#toast");
+// On-Demand Clip Editor Elements
+const clipEditorBackdrop = document.querySelector("#clipEditorBackdrop");
+const editorDot = document.querySelector("#editorDot");
+const editorTitle = document.querySelector("#editorTitle");
+const clipNameInput = document.querySelector("#clipNameInput");
+const loopClipBtn = document.querySelector("#loopClipBtn");
+const prTools = document.querySelector("#prTools");
+const seqTools = document.querySelector("#seqTools");
+const clipPatternBarsSelect = document.querySelector("#clipPatternBarsSelect");
+const scaleSelect = document.querySelector("#scaleSelect");
+const openSynthFromPrBtn = document.querySelector("#openSynthFromPrBtn");
+const clearClipNotesBtn = document.querySelector("#clearClipNotesBtn");
+const fill2StepHatBtn = document.querySelector("#fill2StepHatBtn");
+const fill4FloorBtn = document.querySelector("#fill4FloorBtn");
+const clearDrumClipBtn = document.querySelector("#clearDrumClipBtn");
+const closeClipEditorBtn = document.querySelector("#closeClipEditorBtn");
 
-// Modals
+const pianoRollEditorBody = document.querySelector("#pianoRollEditorBody");
+const beatSequencerBody = document.querySelector("#beatSequencerBody");
+const drumStepRows = document.querySelector("#drumStepRows");
+
+// On-Demand VST Synth Modal Elements
+const synthModal = document.querySelector("#synthModal");
+const synthModalTitle = document.querySelector("#synthModalTitle");
+const synthBody = document.querySelector("#synthBody");
+const auditionSynthBtn = document.querySelector("#auditionSynthBtn");
+const closeSynthBtn = document.querySelector("#closeSynthBtn");
+
+// Cloud & Login Modals
+const toastEl = document.querySelector("#toast");
 const cloudModal = document.querySelector("#cloudModal");
 const closeCloudBtn = document.querySelector("#closeCloudBtn");
 const cloudSaveTitle = document.querySelector("#cloudSaveTitle");
@@ -97,15 +106,7 @@ function showToast(msg) {
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => {
     toastEl.hidden = true;
-  }, 3200);
-}
-
-function getActivePattern() {
-  return project.patterns.find((p) => p.id === project.activePatternId) || project.patterns[0];
-}
-
-function getSelectedChannel() {
-  return project.channels.find((c) => c.id === project.selectedChannelId) || project.channels[0];
+  }, 3000);
 }
 
 function persistLocal() {
@@ -114,37 +115,54 @@ function persistLocal() {
   } catch {}
 }
 
+function getSelectedTrack() {
+  return (project.tracks || []).find((t) => t.id === project.selectedTrackId) || project.tracks?.[0] || null;
+}
+
+function getEditingContext() {
+  const track = (project.tracks || []).find((t) => t.id === editingTrackId);
+  const clip = (project.clips || []).find((c) => c.id === editingClipId);
+  if (!track || !clip) return null;
+  return { project, track, clip };
+}
+
 // Audio Engine
 const engine = new SonoraEngine(
   () => project,
   () => updateTransportReadout()
 );
-engine.mode = "song";
 
-// Canvas Sub-views
+// Piano Roll & Arrangement Views
 const pianoRoll = new PianoRollView(
   document.querySelector("#pianoRollCanvas"),
   document.querySelector("#pianoRollWrap"),
   {
-    getProject: () => project,
+    getEditingContext,
     onNotesChanged: () => {
       persistLocal();
       arrangementView.draw();
     },
-    onAuditionNote: (ch, midi, dur = 0.24) => engine.previewNote(ch, midi, dur),
+    onAuditionNote: (track, midi, dur = 0.24) => engine.previewTrackNote(track, midi, dur),
   }
 );
 
 const arrangementView = new ArrangementView(
   document.querySelector("#arrangementCanvas"),
-  document.querySelector("#arrangementWrap"),
+  arrangementWrap,
   {
     getProject: () => project,
-    onChanged: () => persistLocal(),
-    onSelectPattern: (patId, openEditor) => {
-      project.activePatternId = patId;
-      renderAll();
-      if (openEditor && activeView === "arrangement") setView("split");
+    getSelectedClipId: () => selectedClipId,
+    onSelectClip: (track, clip) => {
+      project.selectedTrackId = track.id;
+      selectedClipId = clip.id;
+      renderTrackHeaders();
+      renderMixer();
+    },
+    onOpenClipEditor: (track, clip) => {
+      openClipEditor(track, clip);
+    },
+    onChanged: () => {
+      persistLocal();
     },
     onSeekBar: (barIdx) => {
       engine.seekToBar(barIdx);
@@ -153,27 +171,19 @@ const arrangementView = new ArrangementView(
   }
 );
 
+// Sync Track Header vertical scroll with Arrangement Timeline
+arrangementWrap.addEventListener("scroll", () => {
+  trackHeadersList.scrollTop = arrangementWrap.scrollTop;
+});
+
 // Transport Controls
-function setMode(mode) {
-  engine.mode = mode;
-  modePatBtn.classList.toggle("active", mode === "pattern");
-  modeSongBtn.classList.toggle("active", mode === "song");
-  if (engine.isPlaying) {
-    engine.stop(true);
-    engine.start(mode);
-  }
-}
-
-modePatBtn.addEventListener("click", () => setMode("pattern"));
-modeSongBtn.addEventListener("click", () => setMode("song"));
-
 function togglePlay() {
   if (engine.isPlaying) {
     engine.stop(false);
     playBtn.classList.remove("playing");
     playBtn.textContent = "▶ PLAY";
   } else {
-    engine.start(engine.mode);
+    engine.start();
     playBtn.classList.add("playing");
     playBtn.textContent = "⏸ PAUSE";
   }
@@ -184,9 +194,9 @@ stopBtn.addEventListener("click", () => {
   engine.stop(true);
   playBtn.classList.remove("playing");
   playBtn.textContent = "▶ PLAY";
-  pianoRoll.setPlayhead(-1);
   arrangementView.setPlayhead(-1);
-  highlightSequencerStep(-1);
+  pianoRoll.setPlayhead(-1);
+  highlightDrumStep(-1);
   updateTransportReadout();
 });
 
@@ -202,7 +212,7 @@ swingInput.addEventListener("input", () => {
 });
 
 projectTitleInput.addEventListener("input", () => {
-  project.title = projectTitleInput.value.trim() || "Untitled Track";
+  project.title = projectTitleInput.value.trim() || "New Session";
   persistLocal();
 });
 
@@ -211,142 +221,70 @@ metroBtn.addEventListener("click", () => {
   metroBtn.classList.toggle("active", engine.metronome);
 });
 
-// View Switcher
-function setView(viewName) {
-  activeView = viewName;
-  viewTabs.forEach((btn) => btn.classList.toggle("active", btn.dataset.view === viewName));
+// Adding Tracks in Arrangement
+addDrumTrackBtn.addEventListener("click", () => {
+  const num = (project.tracks || []).filter((t) => t.type === "drumkit").length + 1;
+  const trk = createDrumTrack(null, { name: `Drum Kit ${num}` });
+  project.tracks.push(trk);
+  project.selectedTrackId = trk.id;
+  const clip = createEmptyClip(trk, 0, 4);
+  project.clips.push(clip);
+  selectedClipId = clip.id;
 
-  if (viewName === "split") {
-    workspaceEl.className = "workspace layout-split";
-    Object.values(panels).forEach((p) => (p.hidden = false));
-  } else {
-    workspaceEl.className = "workspace layout-single";
-    Object.entries(panels).forEach(([key, panel]) => {
-      panel.hidden = key !== viewName;
-    });
-  }
-
-  requestAnimationFrame(() => {
-    pianoRoll.resizeAndDraw();
-    arrangementView.resizeAndDraw();
-  });
-}
-
-viewTabs.forEach((btn) => {
-  btn.addEventListener("click", () => setView(btn.dataset.view));
-});
-
-// Pattern Strip
-function renderPatterns() {
-  patternListEl.innerHTML = project.patterns
-    .map(
-      (p) => `
-      <button class="pat-pill ${p.id === project.activePatternId ? "active" : ""}" data-pat-id="${escapeHtml(p.id)}" type="button">
-        <span class="pat-dot" style="background:${escapeHtml(p.color || "#54a0ff")}"></span>
-        ${escapeHtml(p.name)}
-      </button>
-    `
-    )
-    .join("");
-}
-
-patternListEl.addEventListener("click", (e) => {
-  const pill = e.target.closest("[data-pat-id]");
-  if (!pill) return;
-  project.activePatternId = pill.dataset.patId;
-  renderAll();
-});
-
-patternListEl.addEventListener("dblclick", (e) => {
-  const pill = e.target.closest("[data-pat-id]");
-  if (!pill) return;
-  const pat = project.patterns.find((p) => p.id === pill.dataset.patId);
-  if (!pat) return;
-  const nextName = prompt("패턴 이름 변경:", pat.name);
-  if (nextName && nextName.trim()) {
-    pat.name = nextName.trim().slice(0, 28);
-    persistLocal();
-    renderAll();
-  }
-});
-
-const PAT_COLORS = ["#ff6bcb", "#54a0ff", "#1dd1a1", "#ff9f43", "#a29bfe", "#48dbfb", "#badc58"];
-
-addPatternBtn.addEventListener("click", () => {
-  const idx = project.patterns.length + 1;
-  const steps = {};
-  const notes = {};
-  for (const ch of project.channels) {
-    steps[ch.id] = new Array(16).fill(0);
-    notes[ch.id] = [];
-  }
-  const newPat = {
-    id: `pat_${Date.now()}`,
-    name: `${idx} · Pattern ${idx}`,
-    color: PAT_COLORS[(idx - 1) % PAT_COLORS.length],
-    lengthSteps: 16,
-    steps,
-    notes,
-  };
-  project.patterns.push(newPat);
-  project.activePatternId = newPat.id;
+  engine.rebuildMixGraph();
+  engine.previewDrumRow(trk, "kick808");
   persistLocal();
   renderAll();
-  showToast(`새 패턴 '${newPat.name}' 생성 완료`);
+  showToast(`'${trk.name}' 트랙 추가됨 — 클립 더블클릭 또는 '🥁 비트' 버튼으로 리듬을 찍으세요.`);
 });
 
-clonePatternBtn.addEventListener("click", () => {
-  const cur = getActivePattern();
-  if (!cur) return;
-  const idx = project.patterns.length + 1;
-  const copy = {
-    id: `pat_${Date.now()}`,
-    name: `${cur.name} (복사)`,
-    color: PAT_COLORS[(idx - 1) % PAT_COLORS.length],
-    lengthSteps: cur.lengthSteps || 16,
-    steps: JSON.parse(JSON.stringify(cur.steps || {})),
-    notes: JSON.parse(JSON.stringify(cur.notes || {})),
-  };
-  project.patterns.push(copy);
-  project.activePatternId = copy.id;
+addInstTrackSelect.addEventListener("change", () => {
+  const presetId = addInstTrackSelect.value;
+  if (!presetId) return;
+  const trk = createInstrumentTrack(presetId);
+  project.tracks.push(trk);
+  project.selectedTrackId = trk.id;
+  const clip = createEmptyClip(trk, 0, 4);
+  project.clips.push(clip);
+  selectedClipId = clip.id;
+
+  addInstTrackSelect.value = "";
+  engine.rebuildMixGraph();
+  engine.previewTrackNote(trk, trk.baseMidi || 60, 0.28);
   persistLocal();
   renderAll();
-  showToast(`패턴 복제 완료`);
+  showToast(`'${trk.name}' 트랙 추가됨 — '🎛 악기'로 사운드 편집, '🎹 피아노롤'로 멜로디 입력!`);
 });
 
-// Beat Sequencer & Channel Rack
-function renderSequencer() {
-  const pat = getActivePattern();
-  if (!pat) return;
-  seqPatternLabel.textContent = `${pat.name}`;
+// Render Left Track Headers
+function renderTrackHeaders() {
+  const tracks = project.tracks || [];
+  trackHeadersList.innerHTML = tracks
+    .map((trk) => {
+      const isSel = trk.id === project.selectedTrackId;
+      const isDrum = trk.type === "drumkit";
+      const typeLabel = isDrum ? "DRUM RACK" : trk.category?.toUpperCase() || "SYNTH";
 
-  channelRackList.innerHTML = project.channels
-    .map((ch) => {
-      if (!pat.steps[ch.id]) pat.steps[ch.id] = new Array(16).fill(0);
-      const stepsArr = pat.steps[ch.id];
-      const isSelected = ch.id === project.selectedChannelId;
-      const padsHtml = stepsArr
-        .map((val, idx) => {
-          const altGroup = Math.floor(idx / 4) % 2 === 1 ? "alt-group" : "";
-          const active = val ? "active" : "";
-          const bg = val ? `style="background:${escapeHtml(ch.color)}"` : "";
-          return `<button class="step-pad ${altGroup} ${active}" data-step-ch="${escapeHtml(ch.id)}" data-step-idx="${idx}" ${bg} type="button" aria-label="스텝 ${idx + 1}"></button>`;
-        })
-        .join("");
+      const actionButtons = isDrum
+        ? `<button class="trk-action-btn" data-open-seq="${escapeHtml(trk.id)}" type="button" title="비트 시퀀서 열기">🥁 비트 시퀀서</button>`
+        : `
+          <button class="trk-action-btn" data-open-vst="${escapeHtml(trk.id)}" type="button" title="신스 / 가상악기 설정 열기">🎛 악기</button>
+          <button class="trk-action-btn" data-open-pr="${escapeHtml(trk.id)}" type="button" title="피아노롤 열기">🎹 피아노롤</button>
+        `;
 
       return `
-        <div class="rack-row ${isSelected ? "selected" : ""}">
-          <div class="rack-info">
-            <button class="mute-btn ${ch.muted ? "on" : ""}" data-mute-ch="${escapeHtml(ch.id)}" type="button" title="뮤트(Mute)">M</button>
-            <button class="solo-btn ${ch.solo ? "on" : ""}" data-solo-ch="${escapeHtml(ch.id)}" type="button" title="솔로(Solo)">S</button>
-            <button class="ch-select-btn" style="border-left-color:${escapeHtml(ch.color)}" data-sel-ch="${escapeHtml(ch.id)}" type="button" title="클릭하여 피아노롤/신스 대상 선택 및 미리듣기">
-              ${escapeHtml(ch.name)}
-            </button>
+        <div class="track-header-row ${isSel ? "selected" : ""}" style="border-left-color:${escapeHtml(trk.color)}" data-trk-row="${escapeHtml(trk.id)}">
+          <div class="th-top">
+            <span class="th-name" data-rename-trk="${escapeHtml(trk.id)}" title="더블클릭하여 트랙 이름 변경">${escapeHtml(trk.name)}</span>
+            <span class="th-type-tag">${escapeHtml(typeLabel)}</span>
           </div>
-          <div class="step-grid">${padsHtml}</div>
-          <div class="rack-actions">
-            <button class="mini-btn" data-open-pr="${escapeHtml(ch.id)}" type="button" title="피아노롤 열기">🎹</button>
-            ${project.channels.length > 1 ? `<button class="mini-btn" data-del-ch="${escapeHtml(ch.id)}" type="button" title="채널 삭제">✕</button>` : ""}
+          <div class="th-bottom">
+            <div class="th-btn-group">
+              <button class="mute-btn ${trk.muted ? "on" : ""}" data-mute-trk="${escapeHtml(trk.id)}" type="button" title="뮤트">M</button>
+              <button class="solo-btn ${trk.solo ? "on" : ""}" data-solo-trk="${escapeHtml(trk.id)}" type="button" title="솔로">S</button>
+              ${actionButtons}
+            </div>
+            <button class="trk-action-btn" data-del-trk="${escapeHtml(trk.id)}" type="button" title="트랙 삭제">✕</button>
           </div>
         </div>
       `;
@@ -354,174 +292,450 @@ function renderSequencer() {
     .join("");
 }
 
-channelRackList.addEventListener("click", (e) => {
-  const pad = e.target.closest("[data-step-ch]");
-  if (pad) {
-    const chId = pad.dataset.stepCh;
-    const idx = Number(pad.dataset.stepIdx);
-    const pat = getActivePattern();
-    if (!pat.steps[chId]) pat.steps[chId] = new Array(16).fill(0);
-    const nextVal = pat.steps[chId][idx] ? 0 : 0.86;
-    pat.steps[chId][idx] = nextVal;
-    project.selectedChannelId = chId;
-    const ch = getSelectedChannel();
-    if (nextVal && !engine.isPlaying) {
-      engine.previewNote(ch, ch.baseMidi || 36, 0.18);
-    }
+function getOrCreateClipForTrack(track) {
+  let clip = (project.clips || []).find((c) => c.id === selectedClipId && c.trackId === track.id);
+  if (!clip) {
+    clip = (project.clips || []).find((c) => c.trackId === track.id);
+  }
+  if (!clip) {
+    clip = createEmptyClip(track, 0, 4);
+    project.clips.push(clip);
     persistLocal();
-    renderSequencer();
-    renderSynth();
-    pianoRoll.draw();
-    arrangementView.draw();
-    prTargetLabel.textContent = `${ch.name} (${pat.name})`;
-    return;
+    arrangementView.resizeAndDraw();
   }
+  selectedClipId = clip.id;
+  return clip;
+}
 
-  const selBtn = e.target.closest("[data-sel-ch]");
-  if (selBtn) {
-    project.selectedChannelId = selBtn.dataset.selCh;
-    const ch = getSelectedChannel();
-    engine.previewNote(ch, ch.baseMidi || 60, 0.24);
-    renderAll();
-    return;
-  }
-
-  const muteBtn = e.target.closest("[data-mute-ch]");
-  if (muteBtn) {
-    const ch = project.channels.find((c) => c.id === muteBtn.dataset.muteCh);
-    if (ch) {
-      ch.muted = !ch.muted;
-      engine.rebuildMixGraph();
-      persistLocal();
-      renderSequencer();
+trackHeadersList.addEventListener("click", (e) => {
+  const vstBtn = e.target.closest("[data-open-vst]");
+  if (vstBtn) {
+    const trk = project.tracks.find((t) => t.id === vstBtn.dataset.openVst);
+    if (trk) {
+      project.selectedTrackId = trk.id;
+      renderTrackHeaders();
       renderMixer();
-    }
-    return;
-  }
-
-  const soloBtn = e.target.closest("[data-solo-ch]");
-  if (soloBtn) {
-    const ch = project.channels.find((c) => c.id === soloBtn.dataset.soloCh);
-    if (ch) {
-      ch.solo = !ch.solo;
-      engine.rebuildMixGraph();
-      persistLocal();
-      renderSequencer();
-      renderMixer();
+      openSynthModal(trk);
     }
     return;
   }
 
   const prBtn = e.target.closest("[data-open-pr]");
   if (prBtn) {
-    project.selectedChannelId = prBtn.dataset.openPr;
-    renderAll();
-    if (activeView === "sequencer") setView("pianoroll");
+    const trk = project.tracks.find((t) => t.id === prBtn.dataset.openPr);
+    if (trk) {
+      project.selectedTrackId = trk.id;
+      const clip = getOrCreateClipForTrack(trk);
+      openClipEditor(trk, clip);
+    }
     return;
   }
 
-  const delBtn = e.target.closest("[data-del-ch]");
-  if (delBtn && project.channels.length > 1) {
-    const chId = delBtn.dataset.delCh;
-    project.channels = project.channels.filter((c) => c.id !== chId);
-    if (project.selectedChannelId === chId) {
-      project.selectedChannelId = project.channels[0].id;
+  const seqBtn = e.target.closest("[data-open-seq]");
+  if (seqBtn) {
+    const trk = project.tracks.find((t) => t.id === seqBtn.dataset.openSeq);
+    if (trk) {
+      project.selectedTrackId = trk.id;
+      const clip = getOrCreateClipForTrack(trk);
+      openClipEditor(trk, clip);
+    }
+    return;
+  }
+
+  const muteBtn = e.target.closest("[data-mute-trk]");
+  if (muteBtn) {
+    const trk = project.tracks.find((t) => t.id === muteBtn.dataset.muteTrk);
+    if (trk) {
+      trk.muted = !trk.muted;
+      engine.rebuildMixGraph();
+      persistLocal();
+      renderTrackHeaders();
+      renderMixer();
+    }
+    return;
+  }
+
+  const soloBtn = e.target.closest("[data-solo-trk]");
+  if (soloBtn) {
+    const trk = project.tracks.find((t) => t.id === soloBtn.dataset.soloTrk);
+    if (trk) {
+      trk.solo = !trk.solo;
+      engine.rebuildMixGraph();
+      persistLocal();
+      renderTrackHeaders();
+      renderMixer();
+    }
+    return;
+  }
+
+  const delBtn = e.target.closest("[data-del-trk]");
+  if (delBtn) {
+    const trkId = delBtn.dataset.delTrk;
+    project.tracks = project.tracks.filter((t) => t.id !== trkId);
+    project.clips = (project.clips || []).filter((c) => c.trackId !== trkId);
+    if (project.selectedTrackId === trkId) {
+      project.selectedTrackId = project.tracks[0]?.id || null;
     }
     engine.rebuildMixGraph();
+    persistLocal();
+    renderAll();
+    return;
+  }
+
+  const row = e.target.closest("[data-trk-row]");
+  if (row) {
+    project.selectedTrackId = row.dataset.trkRow;
+    const trk = getSelectedTrack();
+    if (trk) engine.previewTrackNote(trk, trk.baseMidi || 60, 0.2);
+    renderTrackHeaders();
+    renderMixer();
+    arrangementView.draw();
+  }
+});
+
+trackHeadersList.addEventListener("dblclick", (e) => {
+  const nameEl = e.target.closest("[data-rename-trk]");
+  if (!nameEl) return;
+  const trk = project.tracks.find((t) => t.id === nameEl.dataset.renameTrk);
+  if (!trk) return;
+  const next = prompt("트랙 이름 변경:", trk.name);
+  if (next && next.trim()) {
+    trk.name = next.trim().slice(0, 28);
     persistLocal();
     renderAll();
   }
 });
 
-addChannelPresetSelect.addEventListener("change", () => {
-  const presetId = addChannelPresetSelect.value;
-  const newCh = cloneChannelFromPreset(presetId);
-  project.channels.push(newCh);
-  for (const pat of project.patterns) {
-    pat.steps[newCh.id] = new Array(16).fill(0);
-    pat.notes[newCh.id] = [];
+// Console Mixer (Docked at Bottom)
+function renderMixer() {
+  const tracks = project.tracks || [];
+  const stripsHtml = tracks
+    .map(
+      (trk) => `
+      <div class="mixer-strip ${trk.id === project.selectedTrackId ? "selected" : ""}" data-strip-trk="${escapeHtml(trk.id)}">
+        <span class="strip-name" style="color:${escapeHtml(trk.color)}">${escapeHtml(trk.name)}</span>
+        <div class="fader-meter-wrap">
+          <input class="v-fader" type="range" min="0" max="1.15" step="0.01" value="${trk.volume ?? 0.8}" data-mix-vol="${escapeHtml(trk.id)}" title="트랙 볼륨">
+          <div class="meter-bar"><div class="meter-fill" id="meter_${escapeHtml(trk.id)}"></div></div>
+        </div>
+        <div class="strip-knobs">
+          <div class="mini-knob-row">
+            <span>PAN</span>
+            <input type="range" min="-1" max="1" step="0.05" value="${trk.pan ?? 0}" data-mix-pan="${escapeHtml(trk.id)}">
+          </div>
+          <div class="mini-knob-row">
+            <span>REV</span>
+            <input type="range" min="0" max="0.9" step="0.02" value="${trk.reverbSend ?? 0.1}" data-mix-rev="${escapeHtml(trk.id)}">
+          </div>
+        </div>
+        <div class="th-btn-group">
+          <button class="mute-btn ${trk.muted ? "on" : ""}" data-mix-mute="${escapeHtml(trk.id)}" type="button">M</button>
+          <button class="solo-btn ${trk.solo ? "on" : ""}" data-mix-solo="${escapeHtml(trk.id)}" type="button">S</button>
+        </div>
+      </div>
+    `
+    )
+    .join("");
+
+  const masterHtml = `
+    <div class="mixer-strip master-strip">
+      <span class="strip-name" style="color:var(--amber)">MASTER</span>
+      <div class="fader-meter-wrap">
+        <input class="v-fader" type="range" min="0" max="1.15" step="0.01" value="${project.masterVolume ?? 0.88}" id="masterVolFader" title="마스터 볼륨">
+        <div class="meter-bar"><div class="meter-fill" id="meter_master"></div></div>
+      </div>
+      <div class="mini-knob-row"><span>LIMITER</span></div>
+    </div>
+  `;
+
+  mixerStripsEl.innerHTML = masterHtml + stripsHtml;
+
+  document.querySelector("#masterVolFader")?.addEventListener("input", (e) => {
+    project.masterVolume = Number(e.target.value);
+    engine.rebuildMixGraph();
+    persistLocal();
+  });
+}
+
+mixerStripsEl.addEventListener("input", (e) => {
+  const { mixVol, mixPan, mixRev } = e.target.dataset;
+  if (mixVol) {
+    const trk = project.tracks.find((t) => t.id === mixVol);
+    if (trk) trk.volume = Number(e.target.value);
+  } else if (mixPan) {
+    const trk = project.tracks.find((t) => t.id === mixPan);
+    if (trk) trk.pan = Number(e.target.value);
+  } else if (mixRev) {
+    const trk = project.tracks.find((t) => t.id === mixRev);
+    if (trk) trk.reverbSend = Number(e.target.value);
+  } else {
+    return;
   }
-  project.selectedChannelId = newCh.id;
-  addChannelPresetSelect.selectedIndex = 0;
   engine.rebuildMixGraph();
-  engine.previewNote(newCh, newCh.baseMidi || 60, 0.25);
   persistLocal();
-  renderAll();
-  showToast(`가상악기 '${newCh.name}' 채널 추가됨`);
 });
 
-fillHatBtn.addEventListener("click", () => {
-  const pat = getActivePattern();
-  const ch = getSelectedChannel();
-  if (!pat || !ch) return;
-  pat.steps[ch.id] = Array.from({ length: 16 }, (_, i) => (i % 2 === 0 ? 0.78 : 0));
-  persistLocal();
-  renderSequencer();
-  arrangementView.draw();
-});
-
-clearStepsBtn.addEventListener("click", () => {
-  const pat = getActivePattern();
-  if (!pat) return;
-  for (const ch of project.channels) {
-    pat.steps[ch.id] = new Array(16).fill(0);
+mixerStripsEl.addEventListener("click", (e) => {
+  const muteId = e.target.closest("[data-mix-mute]")?.dataset.mixMute;
+  if (muteId) {
+    const trk = project.tracks.find((t) => t.id === muteId);
+    if (trk) {
+      trk.muted = !trk.muted;
+      engine.rebuildMixGraph();
+      persistLocal();
+      renderTrackHeaders();
+      renderMixer();
+    }
+    return;
   }
+  const soloId = e.target.closest("[data-mix-solo]")?.dataset.mixSolo;
+  if (soloId) {
+    const trk = project.tracks.find((t) => t.id === soloId);
+    if (trk) {
+      trk.solo = !trk.solo;
+      engine.rebuildMixGraph();
+      persistLocal();
+      renderTrackHeaders();
+      renderMixer();
+    }
+    return;
+  }
+  const strip = e.target.closest("[data-strip-trk]");
+  if (strip && !e.target.matches("input, button")) {
+    project.selectedTrackId = strip.dataset.stripTrk;
+    renderTrackHeaders();
+    renderMixer();
+  }
+});
+
+resetSoloMuteBtn.addEventListener("click", () => {
+  for (const t of project.tracks) {
+    t.muted = false;
+    t.solo = false;
+  }
+  engine.rebuildMixGraph();
+  renderTrackHeaders();
+  renderMixer();
+});
+
+// ON-DEMAND CLIP EDITOR (PIANO ROLL OR BEAT SEQUENCER)
+function openClipEditor(track, clip) {
+  editingTrackId = track.id;
+  editingClipId = clip.id;
+  selectedClipId = clip.id;
+  project.selectedTrackId = track.id;
+
+  editorDot.style.background = track.color || "#ff6bcb";
+  clipNameInput.value = clip.name || "";
+  loopClipBtn.classList.toggle("active", engine.loopClipId === clip.id);
+
+  if (track.type === "drumkit") {
+    editorTitle.textContent = `🥁 비트 시퀀서 · ${track.name}`;
+    prTools.hidden = true;
+    seqTools.hidden = false;
+    pianoRollEditorBody.hidden = true;
+    beatSequencerBody.hidden = false;
+    renderBeatSequencerRows(track, clip);
+  } else {
+    editorTitle.textContent = `🎹 피아노롤 · ${track.name}`;
+    prTools.hidden = false;
+    seqTools.hidden = true;
+    pianoRollEditorBody.hidden = false;
+    beatSequencerBody.hidden = true;
+    clipPatternBarsSelect.value = String(clip.patternBars || 1);
+    scaleSelect.value = project.scale || "minor";
+  }
+
+  clipEditorBackdrop.hidden = false;
+  renderTrackHeaders();
+  renderMixer();
+  arrangementView.draw();
+
+  if (track.type !== "drumkit") {
+    requestAnimationFrame(() => {
+      pianoRoll.resizeAndDraw();
+      pianoRoll.scrollToCenterOctave();
+    });
+  }
+}
+
+function closeClipEditor() {
+  clipEditorBackdrop.hidden = true;
+  if (engine.loopClipId) {
+    engine.loopClipId = null;
+    loopClipBtn.classList.remove("active");
+  }
+  editingTrackId = null;
+  editingClipId = null;
+  arrangementView.draw();
+}
+
+closeClipEditorBtn.addEventListener("click", closeClipEditor);
+clipEditorBackdrop.addEventListener("click", (e) => {
+  if (e.target === clipEditorBackdrop) closeClipEditor();
+});
+
+clipNameInput.addEventListener("input", () => {
+  const ctx = getEditingContext();
+  if (ctx?.clip) {
+    ctx.clip.name = clipNameInput.value.trim() || "Clip";
+    persistLocal();
+    arrangementView.draw();
+  }
+});
+
+loopClipBtn.addEventListener("click", () => {
+  const ctx = getEditingContext();
+  if (!ctx?.clip) return;
+  if (engine.loopClipId === ctx.clip.id) {
+    engine.loopClipId = null;
+    loopClipBtn.classList.remove("active");
+  } else {
+    engine.loopClipId = ctx.clip.id;
+    engine.seekToBar(ctx.clip.bar || 0);
+    loopClipBtn.classList.add("active");
+    if (!engine.isPlaying) togglePlay();
+  }
+});
+
+clipPatternBarsSelect.addEventListener("change", () => {
+  const ctx = getEditingContext();
+  if (!ctx?.clip) return;
+  ctx.clip.patternBars = Number(clipPatternBarsSelect.value) || 1;
   persistLocal();
-  renderSequencer();
+  pianoRoll.resizeAndDraw();
   arrangementView.draw();
 });
 
-// Piano Roll Toolbar
 scaleSelect.addEventListener("change", () => {
   project.scale = scaleSelect.value;
-  pianoRoll.draw();
   persistLocal();
+  pianoRoll.draw();
 });
 
-clearNotesBtn.addEventListener("click", () => {
-  const pat = getActivePattern();
-  const ch = getSelectedChannel();
-  if (pat && ch) {
-    pat.notes[ch.id] = [];
+openSynthFromPrBtn.addEventListener("click", () => {
+  const ctx = getEditingContext();
+  if (ctx?.track) openSynthModal(ctx.track);
+});
+
+clearClipNotesBtn.addEventListener("click", () => {
+  const ctx = getEditingContext();
+  if (ctx?.clip) {
+    ctx.clip.notes = [];
     persistLocal();
     pianoRoll.draw();
     arrangementView.draw();
   }
 });
 
-clearArrangementBtn.addEventListener("click", () => {
-  project.arrangement = [];
+// Beat Sequencer inside Clip Editor
+function renderBeatSequencerRows(track, clip) {
+  if (!clip.drumSteps) clip.drumSteps = {};
+  drumStepRows.innerHTML = DRUM_ROWS.map((row) => {
+    if (!clip.drumSteps[row.key]) clip.drumSteps[row.key] = new Array(16).fill(0);
+    const arr = clip.drumSteps[row.key];
+    const pads = arr
+      .map((val, idx) => {
+        const alt = Math.floor(idx / 4) % 2 === 1 ? "alt-group" : "";
+        const act = val ? "active" : "";
+        const bg = val ? `style="background:${escapeHtml(row.color)}"` : "";
+        return `<button class="step-pad ${alt} ${act}" data-drum-key="${escapeHtml(row.key)}" data-step-idx="${idx}" ${bg} type="button"></button>`;
+      })
+      .join("");
+
+    return `
+      <div class="drum-row">
+        <button class="drum-name-btn" style="border-left-color:${escapeHtml(row.color)}" data-preview-drum="${escapeHtml(row.key)}" type="button">
+          ${escapeHtml(row.name)}
+        </button>
+        <div class="step-grid">${pads}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+drumStepRows.addEventListener("click", (e) => {
+  const ctx = getEditingContext();
+  if (!ctx?.track || !ctx?.clip) return;
+
+  const previewBtn = e.target.closest("[data-preview-drum]");
+  if (previewBtn) {
+    engine.previewDrumRow(ctx.track, previewBtn.dataset.previewDrum);
+    return;
+  }
+
+  const pad = e.target.closest("[data-drum-key]");
+  if (pad) {
+    const key = pad.dataset.drumKey;
+    const idx = Number(pad.dataset.stepIdx);
+    if (!ctx.clip.drumSteps[key]) ctx.clip.drumSteps[key] = new Array(16).fill(0);
+    const next = ctx.clip.drumSteps[key][idx] ? 0 : 0.88;
+    ctx.clip.drumSteps[key][idx] = next;
+    if (next && !engine.isPlaying) {
+      engine.previewDrumRow(ctx.track, key);
+    }
+    persistLocal();
+    renderBeatSequencerRows(ctx.track, ctx.clip);
+    arrangementView.draw();
+  }
+});
+
+fill2StepHatBtn.addEventListener("click", () => {
+  const ctx = getEditingContext();
+  if (!ctx?.clip) return;
+  ctx.clip.drumSteps.hihat = Array.from({ length: 16 }, (_, i) => (i % 2 === 0 ? 0.78 : 0));
   persistLocal();
+  renderBeatSequencerRows(ctx.track, ctx.clip);
   arrangementView.draw();
 });
 
-// Synthesizer & Virtual Instrument Editor
-function renderSynth() {
-  const ch = getSelectedChannel();
-  if (!ch) return;
-  synthChannelLabel.textContent = `${ch.name} (${ch.category})`;
-  const s = ch.synth || {};
-  const isMelodic = ch.engine === "synth" || ch.engine === "fmkeys";
+fill4FloorBtn.addEventListener("click", () => {
+  const ctx = getEditingContext();
+  if (!ctx?.clip) return;
+  ctx.clip.drumSteps.kick808 = Array.from({ length: 16 }, (_, i) => (i % 4 === 0 ? 0.94 : 0));
+  persistLocal();
+  renderBeatSequencerRows(ctx.track, ctx.clip);
+  arrangementView.draw();
+});
+
+clearDrumClipBtn.addEventListener("click", () => {
+  const ctx = getEditingContext();
+  if (!ctx?.clip) return;
+  for (const r of DRUM_ROWS) ctx.clip.drumSteps[r.key] = new Array(16).fill(0);
+  persistLocal();
+  renderBeatSequencerRows(ctx.track, ctx.clip);
+  arrangementView.draw();
+});
+
+// ON-DEMAND VST SYNTH / VIRTUAL INSTRUMENT WINDOW
+function openSynthModal(track) {
+  if (!track || track.type === "drumkit") return;
+  synthTargetTrackId = track.id;
+  renderSynthBody(track);
+  synthModal.hidden = false;
+}
+
+function renderSynthBody(track) {
+  synthModalTitle.textContent = `${track.name} · 사운드 엔진`;
+  const s = track.synth || {};
 
   const presetOptions = INSTRUMENT_PRESETS.map(
-    (p) => `<option value="${p.id}" ${p.id === ch.presetId ? "selected" : ""}>${escapeHtml(p.name)} (${p.category})</option>`
+    (p) => `<option value="${p.id}" ${p.id === track.presetId ? "selected" : ""}>${escapeHtml(p.name)} (${p.category})</option>`
   ).join("");
 
-  const waveButtons = isMelodic
-    ? ["sawtooth", "square", "triangle", "sine"]
-        .map(
-          (w) =>
-            `<button class="wave-btn ${(s.waveform || "sawtooth") === w ? "active" : ""}" data-wave="${w}" type="button">${w.toUpperCase()}</button>`
-        )
-        .join("")
-    : `<span class="tool-hint">드럼 전용 물리 모델링 엔진 (${escapeHtml(ch.engine.toUpperCase())})</span>`;
+  const waveButtons = ["sawtooth", "square", "triangle", "sine"]
+    .map(
+      (w) =>
+        `<button class="wave-btn ${(s.waveform || "sawtooth") === w ? "active" : ""}" data-wave="${w}" type="button">${w.toUpperCase()}</button>`
+    )
+    .join("");
 
   synthBody.innerHTML = `
     <div class="synth-top-row">
-      <label class="inline-label">프리셋 사운드 교체
+      <label class="inline-label">가상악기 프리셋 변경
         <select id="synthPresetPicker" class="mini-select">${presetOptions}</select>
       </label>
-      <div class="synth-Wave-pills">${waveButtons}</div>
+      <div class="synth-wave-pills">${waveButtons}</div>
     </div>
 
     <div class="synth-knobs-grid">
@@ -541,43 +755,38 @@ function renderSynth() {
         <span>DECAY <strong id="valDec">${Math.round((s.decay ?? 0.25) * 1000)} ms</strong></span>
         <input type="range" min="0.04" max="1.2" step="0.01" value="${s.decay ?? 0.25}" data-synth-param="decay">
       </label>
-      ${
-        isMelodic
-          ? `
-        <label class="knob-card">
-          <span>SUSTAIN <strong id="valSus">${Math.round((s.sustain ?? 0.6) * 100)}%</strong></span>
-          <input type="range" min="0" max="1" step="0.02" value="${s.sustain ?? 0.6}" data-synth-param="sustain">
-        </label>
-        <label class="knob-card">
-          <span>RELEASE <strong id="valRel">${Math.round((s.release ?? 0.2) * 1000)} ms</strong></span>
-          <input type="range" min="0.02" max="1.5" step="0.02" value="${s.release ?? 0.2}" data-synth-param="release">
-        </label>
-        <label class="knob-card">
-          <span>UNISON DETUNE <strong id="valDet">${Math.round(s.detune ?? 10)} ct</strong></span>
-          <input type="range" min="0" max="45" step="1" value="${s.detune ?? 10}" data-synth-param="detune">
-        </label>
-        <label class="knob-card">
-          <span>SUB / FM DEPTH <strong id="valSub">${Math.round((ch.engine === "fmkeys" ? (s.fmAmount ?? 2) * 20 : (s.subMix ?? 0.2) * 100))}%</strong></span>
-          <input type="range" min="0" max="${ch.engine === "fmkeys" ? 5 : 1}" step="0.05" value="${ch.engine === "fmkeys" ? s.fmAmount ?? 2 : s.subMix ?? 0.2}" data-synth-param="${ch.engine === "fmkeys" ? "fmAmount" : "subMix"}">
-        </label>
-      `
-          : ""
-      }
+      <label class="knob-card">
+        <span>SUSTAIN <strong id="valSus">${Math.round((s.sustain ?? 0.6) * 100)}%</strong></span>
+        <input type="range" min="0" max="1" step="0.02" value="${s.sustain ?? 0.6}" data-synth-param="sustain">
+      </label>
+      <label class="knob-card">
+        <span>RELEASE <strong id="valRel">${Math.round((s.release ?? 0.2) * 1000)} ms</strong></span>
+        <input type="range" min="0.02" max="1.5" step="0.02" value="${s.release ?? 0.2}" data-synth-param="release">
+      </label>
+      <label class="knob-card">
+        <span>UNISON DETUNE <strong id="valDet">${Math.round(s.detune ?? 10)} ct</strong></span>
+        <input type="range" min="0" max="45" step="1" value="${s.detune ?? 10}" data-synth-param="detune">
+      </label>
+      <label class="knob-card">
+        <span>${track.engine === "fmkeys" ? "FM MODULATION" : "SUB OSCILLATOR"} <strong id="valSub">${Math.round((track.engine === "fmkeys" ? (s.fmAmount ?? 2) * 20 : (s.subMix ?? 0.2) * 100))}%</strong></span>
+        <input type="range" min="0" max="${track.engine === "fmkeys" ? 5 : 1}" step="0.05" value="${track.engine === "fmkeys" ? s.fmAmount ?? 2 : s.subMix ?? 0.2}" data-synth-param="${track.engine === "fmkeys" ? "fmAmount" : "subMix"}">
+      </label>
     </div>
   `;
 
   document.querySelector("#synthPresetPicker")?.addEventListener("change", (e) => {
     const preset = INSTRUMENT_PRESETS.find((p) => p.id === e.target.value);
     if (!preset) return;
-    ch.presetId = preset.id;
-    ch.name = preset.name;
-    ch.category = preset.category;
-    ch.color = preset.color;
-    ch.engine = preset.engine;
-    ch.baseMidi = preset.baseMidi;
-    ch.synth = { ...preset.synth };
-    engine.previewNote(ch, ch.baseMidi || 60, 0.3);
+    track.presetId = preset.id;
+    track.name = preset.name;
+    track.category = preset.category;
+    track.color = preset.color;
+    track.engine = preset.engine;
+    track.baseMidi = preset.baseMidi;
+    track.synth = { ...preset.synth };
+    engine.previewTrackNote(track, track.baseMidi || 60, 0.3);
     persistLocal();
+    renderSynthBody(track);
     renderAll();
   });
 }
@@ -585,19 +794,21 @@ function renderSynth() {
 synthBody.addEventListener("click", (e) => {
   const waveBtn = e.target.closest("[data-wave]");
   if (!waveBtn) return;
-  const ch = getSelectedChannel();
-  ch.synth.waveform = waveBtn.dataset.wave;
-  engine.previewNote(ch, 60, 0.25);
+  const track = project.tracks.find((t) => t.id === synthTargetTrackId);
+  if (!track) return;
+  track.synth.waveform = waveBtn.dataset.wave;
+  engine.previewTrackNote(track, 60, 0.25);
   persistLocal();
-  renderSynth();
+  renderSynthBody(track);
 });
 
 synthBody.addEventListener("input", (e) => {
   const param = e.target.dataset.synthParam;
   if (!param) return;
-  const ch = getSelectedChannel();
+  const track = project.tracks.find((t) => t.id === synthTargetTrackId);
+  if (!track) return;
   const val = Number(e.target.value);
-  ch.synth[param] = val;
+  track.synth[param] = val;
 
   if (param === "cutoff") document.querySelector("#valCutoff").textContent = `${Math.round(val)} Hz`;
   if (param === "resonance") document.querySelector("#valRes").textContent = val.toFixed(1);
@@ -613,115 +824,13 @@ synthBody.addEventListener("input", (e) => {
 });
 
 auditionSynthBtn.addEventListener("click", () => {
-  const ch = getSelectedChannel();
-  engine.previewNote(ch, ch.category === "Drum" ? ch.baseMidi : 60, 0.4);
+  const track = project.tracks.find((t) => t.id === synthTargetTrackId);
+  if (track) engine.previewTrackNote(track, 60, 0.4);
 });
 
-// Studio Console Mixer
-function renderMixer() {
-  const chStrips = project.channels
-    .map(
-      (ch) => `
-      <div class="mixer-strip ${ch.id === project.selectedChannelId ? "selected" : ""}" data-strip-ch="${escapeHtml(ch.id)}">
-        <span class="strip-name" style="color:${escapeHtml(ch.color)}">${escapeHtml(ch.name)}</span>
-        <div class="fader-meter-wrap">
-          <input class="v-fader" type="range" min="0" max="1.15" step="0.01" value="${ch.volume ?? 0.8}" data-mix-vol="${escapeHtml(ch.id)}" title="채널 볼륨">
-          <div class="meter-bar"><div class="meter-fill" id="meter_${escapeHtml(ch.id)}"></div></div>
-        </div>
-        <div class="mini-knob-row">
-          <span>PAN (${ch.pan > 0.04 ? "R" : ch.pan < -0.04 ? "L" : "C"})</span>
-          <input type="range" min="-1" max="1" step="0.05" value="${ch.pan ?? 0}" data-mix-pan="${escapeHtml(ch.id)}">
-        </div>
-        <div class="mini-knob-row">
-          <span>REVERB ${Math.round((ch.reverbSend ?? 0.1) * 100)}%</span>
-          <input type="range" min="0" max="0.9" step="0.02" value="${ch.reverbSend ?? 0.1}" data-mix-rev="${escapeHtml(ch.id)}">
-        </div>
-        <div class="mini-knob-row">
-          <span>DELAY ${Math.round((ch.delaySend ?? 0.05) * 100)}%</span>
-          <input type="range" min="0" max="0.8" step="0.02" value="${ch.delaySend ?? 0.05}" data-mix-dly="${escapeHtml(ch.id)}">
-        </div>
-        <div class="rack-info">
-          <button class="mute-btn ${ch.muted ? "on" : ""}" data-mix-mute="${escapeHtml(ch.id)}" type="button">M</button>
-          <button class="solo-btn ${ch.solo ? "on" : ""}" data-mix-solo="${escapeHtml(ch.id)}" type="button">S</button>
-        </div>
-      </div>
-    `
-    )
-    .join("");
-
-  const masterStrip = `
-    <div class="mixer-strip master-strip">
-      <span class="strip-name" style="color:var(--amber)">MASTER</span>
-      <div class="fader-meter-wrap">
-        <input class="v-fader" type="range" min="0" max="1.15" step="0.01" value="${project.masterVolume ?? 0.88}" id="masterVolFader" title="마스터 출력 볼륨">
-        <div class="meter-bar"><div class="meter-fill" id="meter_master"></div></div>
-      </div>
-      <div class="mini-knob-row"><span>LIMITER ON</span></div>
-    </div>
-  `;
-
-  mixerStripsEl.innerHTML = masterStrip + chStrips;
-
-  document.querySelector("#masterVolFader")?.addEventListener("input", (e) => {
-    project.masterVolume = Number(e.target.value);
-    engine.rebuildMixGraph();
-    persistLocal();
-  });
-}
-
-mixerStripsEl.addEventListener("input", (e) => {
-  const { mixVol, mixPan, mixRev, mixDly } = e.target.dataset;
-  if (mixVol) {
-    const ch = project.channels.find((c) => c.id === mixVol);
-    if (ch) ch.volume = Number(e.target.value);
-  } else if (mixPan) {
-    const ch = project.channels.find((c) => c.id === mixPan);
-    if (ch) ch.pan = Number(e.target.value);
-  } else if (mixRev) {
-    const ch = project.channels.find((c) => c.id === mixRev);
-    if (ch) ch.reverbSend = Number(e.target.value);
-  } else if (mixDly) {
-    const ch = project.channels.find((c) => c.id === mixDly);
-    if (ch) ch.delaySend = Number(e.target.value);
-  } else {
-    return;
-  }
-  engine.rebuildMixGraph();
-  persistLocal();
-});
-
-mixerStripsEl.addEventListener("click", (e) => {
-  const muteId = e.target.closest("[data-mix-mute]")?.dataset.mixMute;
-  if (muteId) {
-    const ch = project.channels.find((c) => c.id === muteId);
-    if (ch) {
-      ch.muted = !ch.muted;
-      engine.rebuildMixGraph();
-      renderSequencer();
-      renderMixer();
-    }
-    return;
-  }
-  const soloId = e.target.closest("[data-mix-solo]")?.dataset.mixSolo;
-  if (soloId) {
-    const ch = project.channels.find((c) => c.id === soloId);
-    if (ch) {
-      ch.solo = !ch.solo;
-      engine.rebuildMixGraph();
-      renderSequencer();
-      renderMixer();
-    }
-  }
-});
-
-resetSoloMuteBtn.addEventListener("click", () => {
-  for (const ch of project.channels) {
-    ch.muted = false;
-    ch.solo = false;
-  }
-  engine.rebuildMixGraph();
-  renderSequencer();
-  renderMixer();
+closeSynthBtn.addEventListener("click", () => (synthModal.hidden = true));
+synthModal.addEventListener("click", (e) => {
+  if (e.target === synthModal) synthModal.hidden = true;
 });
 
 // Demo Loader & WAV Export
@@ -730,31 +839,32 @@ demoSelect.addEventListener("change", () => {
   if (!factory) return;
   const wasPlaying = engine.isPlaying;
   engine.stop(true);
+  closeClipEditor();
   project = factory();
+  selectedClipId = project.clips?.[0]?.id || null;
   engine.graph = null;
   persistLocal();
   renderAll();
-  pianoRoll.scrollToCenterOctave();
   if (wasPlaying) {
-    engine.start(engine.mode);
+    engine.start();
     playBtn.classList.add("playing");
     playBtn.textContent = "⏸ PAUSE";
   }
-  showToast(`'${project.title}' 로드 완료`);
+  showToast(`'${project.title}' 세션 로드 완료`);
 });
 
 exportWavBtn.addEventListener("click", async () => {
   exportWavBtn.disabled = true;
-  exportWavBtn.textContent = "⏳ 렌더링 중…";
+  exportWavBtn.textContent = "⏳ 렌더링…";
   try {
-    const blob = await exportProjectToWav(project, engine.mode);
+    const blob = await exportProjectToWav(project);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `${(project.title || "sonora_track").replace(/[^a-zA-Z0-9가-힣_-]/g, "_")}.wav`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("16-bit 스테레오 WAV 내보내기 완료!");
+    showToast("16-bit 스테레오 WAV 파일 추출 완료!");
   } catch (err) {
     showToast(`WAV 추출 실패: ${err.message}`);
   } finally {
@@ -763,12 +873,11 @@ exportWavBtn.addEventListener("click", async () => {
   }
 });
 
-// Real-time Animation Loop (Playhead, LCD, Spectrum, Peak Meters)
-function highlightSequencerStep(step) {
-  const pads = channelRackList.querySelectorAll(".step-pad");
-  pads.forEach((pad) => {
-    const idx = Number(pad.dataset.stepIdx);
-    pad.classList.toggle("playing-step", idx === step);
+// Animation Loop
+function highlightDrumStep(step) {
+  if (beatSequencerBody.hidden) return;
+  drumStepRows.querySelectorAll(".step-pad").forEach((pad) => {
+    pad.classList.toggle("playing-step", Number(pad.dataset.stepIdx) === step);
   });
 }
 
@@ -780,38 +889,48 @@ function updateTransportReadout() {
   lcdTime.textContent = `${String(bar).padStart(2, "0")} : ${String(beat).padStart(2, "0")} : ${String(sixteenth).padStart(2, "0")}`;
 
   if (engine.isPlaying) {
-    const localStep = gStep % 16;
-    highlightSequencerStep(localStep);
-    pianoRoll.setPlayhead(localStep);
-    arrangementView.setPlayhead(engine.mode === "song" ? gStep : -1);
+    arrangementView.setPlayhead(gStep);
+
+    const ctx = getEditingContext();
+    if (ctx?.clip) {
+      const clipStartStep = (ctx.clip.bar || 0) * 16;
+      const clipEndStep = clipStartStep + (ctx.clip.lengthBars || 1) * 16;
+      const patSteps = (ctx.clip.patternBars || 1) * 16;
+      if (gStep >= clipStartStep && gStep < clipEndStep) {
+        const localStep = (gStep - clipStartStep) % patSteps;
+        pianoRoll.setPlayhead(localStep);
+        highlightDrumStep(localStep % 16);
+      } else {
+        pianoRoll.setPlayhead(-1);
+        highlightDrumStep(-1);
+      }
+    }
   }
 }
 
 function animationFrame() {
   updateTransportReadout();
 
-  // Channel Peak Meters
   let masterPeak = 0;
-  for (const ch of project.channels) {
-    const peak = engine.getChannelPeak(ch.id);
+  for (const trk of project.tracks || []) {
+    const peak = engine.getTrackPeak(trk.id);
     if (peak > masterPeak) masterPeak = peak;
-    const el = document.getElementById(`meter_${ch.id}`);
-    if (el) el.style.height = `${Math.max(3, Math.round(peak * 100))}%`;
+    const el = document.getElementById(`meter_${trk.id}`);
+    if (el) el.style.height = `${Math.max(4, Math.round(peak * 100))}%`;
   }
   const masterEl = document.getElementById("meter_master");
-  if (masterEl) masterEl.style.height = `${Math.max(3, Math.round(masterPeak * 100))}%`;
+  if (masterEl) masterEl.style.height = `${Math.max(4, Math.round(masterPeak * 100))}%`;
 
-  // Master Spectrum Canvas
   specCtx.fillStyle = "#070a0f";
   specCtx.fillRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
   const bins = engine.getMasterSpectrum();
   if (bins) {
-    const count = 22;
+    const count = 20;
     const barW = spectrumCanvas.width / count;
     for (let i = 0; i < count; i++) {
       const val = bins[i * 2] / 255;
       const h = Math.max(2, val * (spectrumCanvas.height - 4));
-      specCtx.fillStyle = i > 15 ? "#ff6bcb" : "#38bdf8";
+      specCtx.fillStyle = i > 14 ? "#ff6bcb" : "#38bdf8";
       specCtx.fillRect(i * barW + 1, spectrumCanvas.height - h, barW - 2, h);
     }
   }
@@ -819,7 +938,7 @@ function animationFrame() {
   requestAnimationFrame(animationFrame);
 }
 
-// Computer Keyboard Musical Typing + Spacebar Play/Pause
+// Keyboard Shortcuts & Musical Typing
 const KEY_TO_MIDI = {
   KeyZ: 48, KeyS: 49, KeyX: 50, KeyD: 51, KeyC: 52, KeyV: 53, KeyG: 54, KeyB: 55, KeyH: 56, KeyN: 57, KeyJ: 58, KeyM: 59,
   KeyQ: 60, Digit2: 61, KeyW: 62, Digit3: 63, KeyE: 64, KeyR: 65, Digit5: 66, KeyT: 67, Digit6: 68, KeyY: 69, Digit7: 70, KeyU: 71, KeyI: 72,
@@ -827,14 +946,19 @@ const KEY_TO_MIDI = {
 
 window.addEventListener("keydown", (e) => {
   if (e.target.matches("input, textarea, select")) return;
+  if (e.code === "Escape") {
+    if (!synthModal.hidden) synthModal.hidden = true;
+    else if (!clipEditorBackdrop.hidden) closeClipEditor();
+    return;
+  }
   if (e.code === "Space") {
     e.preventDefault();
     togglePlay();
     return;
   }
   if (!e.repeat && KEY_TO_MIDI[e.code] !== undefined) {
-    const ch = getSelectedChannel();
-    engine.previewNote(ch, KEY_TO_MIDI[e.code], 0.3);
+    const trk = getSelectedTrack();
+    if (trk) engine.previewTrackNote(trk, KEY_TO_MIDI[e.code], 0.3);
   }
 });
 
@@ -905,7 +1029,7 @@ loginForm.addEventListener("submit", async (e) => {
 });
 
 openCloudBtn.addEventListener("click", () => {
-  cloudSaveTitle.value = project.title || "Untitled Track";
+  cloudSaveTitle.value = project.title || "New Session";
   cloudModal.hidden = false;
   refreshCloudLists();
 });
@@ -931,7 +1055,7 @@ async function refreshCloudLists() {
         `
           )
           .join("")
-      : `<small style="color:var(--muted)">아직 공개된 트랙이 없습니다. 첫 트랙을 공유해 보세요!</small>`;
+      : `<small style="color:var(--muted)">아직 공개된 트랙이 없습니다.</small>`;
   } catch {
     publicProjectsList.innerHTML = `<small style="color:var(--muted)">목록을 불러오지 못했습니다.</small>`;
   }
@@ -971,7 +1095,7 @@ saveCloudBtn.addEventListener("click", async () => {
     loginModal.hidden = false;
     return;
   }
-  const title = cloudSaveTitle.value.trim() || project.title || "Untitled Track";
+  const title = cloudSaveTitle.value.trim() || project.title || "New Session";
   project.title = title;
   projectTitleInput.value = title;
   saveCloudBtn.disabled = true;
@@ -1002,6 +1126,9 @@ cloudModal.addEventListener("click", async (e) => {
   if (loadId) {
     try {
       const full = await api(`/api/projects/${loadId}`);
+      if (!Array.isArray(full.project_data?.tracks)) {
+        throw new Error("이전 버전 포맷 프로젝트입니다.");
+      }
       engine.stop(true);
       project = full.project_data;
       project.projectId = full.project_id;
@@ -1039,7 +1166,6 @@ cloudModal.addEventListener("click", async (e) => {
   }
 });
 
-// Local JSON Export / Import
 saveJsonBtn.addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1054,11 +1180,8 @@ loadJsonInput.addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
   try {
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed.channels) || !Array.isArray(parsed.patterns)) {
-      throw new Error("유효한 SONORA 프로젝트 파일이 아닙니다.");
-    }
+    const parsed = JSON.parse(await file.text());
+    if (!Array.isArray(parsed.tracks)) throw new Error("유효한 SONORA 프로젝트 파일이 아닙니다.");
     engine.stop(true);
     project = parsed;
     engine.graph = null;
@@ -1072,30 +1195,23 @@ loadJsonInput.addEventListener("change", async (e) => {
 });
 
 function renderAll() {
-  projectTitleInput.value = project.title || "Untitled Track";
+  projectTitleInput.value = project.title || "New Session";
   bpmInput.value = project.bpm || 120;
   swingInput.value = project.swing || 0;
-  scaleSelect.value = project.scale || "minor";
 
-  const pat = getActivePattern();
-  const ch = getSelectedChannel();
-  prTargetLabel.textContent = `${ch?.name || ""} · ${pat?.name || ""}`;
-
-  renderPatterns();
-  renderSequencer();
-  renderSynth();
+  renderTrackHeaders();
   renderMixer();
-  pianoRoll.resizeAndDraw();
   arrangementView.resizeAndDraw();
 }
 
-// Initialize
+// Initialize with clean 2-track Blank Session by default!
 (async function init() {
+  project = DEMO_PROJECTS.blank();
   try {
     const saved = localStorage.getItem(LOCAL_AUTOSAVE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed.channels) && Array.isArray(parsed.patterns)) {
+      if (Array.isArray(parsed.tracks)) {
         project = parsed;
       }
     }
@@ -1113,6 +1229,5 @@ function renderAll() {
 
   renderAuth();
   renderAll();
-  requestAnimationFrame(() => pianoRoll.scrollToCenterOctave());
   requestAnimationFrame(animationFrame);
 })();

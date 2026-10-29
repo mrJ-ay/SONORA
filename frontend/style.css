@@ -489,51 +489,137 @@ body {
   text-overflow: ellipsis;
 }
 
-/* ADD TRACK BUTTONS */
+/* ADD TRACK & INSTRUMENT SLOT */
 .add-track-btn {
   border-radius: 6px;
-  padding: 4px 9px;
-  font-size: 0.74rem;
+  padding: 4px 11px;
+  font-size: 0.76rem;
   font-weight: 800;
   cursor: pointer;
   border: 1px solid transparent;
   white-space: nowrap;
 }
 
-.add-track-btn.drum {
-  background: rgba(255, 92, 92, 0.16);
-  border-color: rgba(255, 92, 92, 0.45);
-  color: #ff9494;
+.add-track-btn.plain {
+  background: rgba(84, 160, 255, 0.18);
+  border-color: rgba(84, 160, 255, 0.55);
+  color: #cfe5ff;
 }
 
-.add-track-btn.drum:hover {
-  background: rgba(255, 92, 92, 0.28);
+.add-track-btn.plain:hover {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: #08121c;
 }
 
-.add-track-btn.external {
-  background: rgba(29, 209, 161, 0.16);
-  border-color: rgba(29, 209, 161, 0.48);
+.trk-slot-btn {
+  border: 1px solid #334363;
+  background: #1a2438;
+  color: #e2e8f0;
+  font-size: 0.69rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trk-slot-btn:hover {
+  border-color: var(--cyan);
+  background: #24334f;
+}
+
+.trk-slot-btn.unassigned {
+  border-style: dashed;
+  border-color: var(--amber);
+  background: rgba(255, 209, 102, 0.11);
+  color: var(--amber);
+}
+
+.trk-slot-btn.unassigned:hover {
+  background: rgba(255, 209, 102, 0.24);
+}
+
+.strip-slot-btn {
+  width: 100%;
+  border: 1px solid #2b3954;
+  background: #151d2d;
+  color: #cbd5e1;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip-slot-btn.unassigned {
+  border-style: dashed;
+  border-color: rgba(255, 209, 102, 0.6);
+  color: var(--amber);
+}
+
+.plugin-rack-section-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+
+.plugin-rack-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.plugin-card-btn {
+  background: #0d121c;
+  border: 1px solid #25324a;
+  border-radius: 8px;
+  padding: 9px 10px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.plugin-card-btn:hover {
+  border-color: var(--cyan);
+  background: #162033;
+}
+
+.plugin-card-btn strong {
+  font-size: 0.8rem;
+}
+
+.plugin-card-btn span {
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.ext-drop-btn {
+  width: 100%;
+  background: rgba(29, 209, 161, 0.11);
+  border: 1.5px dashed rgba(29, 209, 161, 0.55);
+  border-radius: 9px;
+  padding: 12px;
   color: #55efc4;
-}
-
-.add-track-btn.external:hover {
-  background: rgba(29, 209, 161, 0.28);
-}
-
-.add-track-select {
-  background: rgba(84, 160, 255, 0.15);
-  border: 1px solid rgba(84, 160, 255, 0.45);
-  color: #a4ceff;
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   font-weight: 800;
   cursor: pointer;
+  text-align: center;
 }
 
-.add-track-select option {
-  background: #131824;
-  color: var(--text);
+.ext-drop-btn:hover {
+  background: rgba(29, 209, 161, 0.22);
 }
 
 .mini-btn {

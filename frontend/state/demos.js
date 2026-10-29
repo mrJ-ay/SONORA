@@ -97,6 +97,25 @@ export function createSf2Track({ sf2Id, sf2InstIndex = 0, name }) {
   };
 }
 
+export function createPlainTrack(trackNum = 1, customId) {
+  return {
+    id: customId || `trk_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    type: "empty",
+    engine: "none",
+    name: `Track ${trackNum}`,
+    pluginName: "",
+    category: "EMPTY",
+    color: "#64748b",
+    volume: 0.82,
+    pan: 0,
+    muted: false,
+    solo: false,
+    reverbSend: 0.14,
+    delaySend: 0.06,
+    synth: {},
+  };
+}
+
 export function createEmptyClip(track, bar = 0, lengthBars = 2) {
   const drumSteps = {};
   if (track.type === "drumkit") {
@@ -105,7 +124,7 @@ export function createEmptyClip(track, bar = 0, lengthBars = 2) {
   return {
     id: `clip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     trackId: track.id,
-    name: track.type === "drumkit" ? "Beat Clip" : "MIDI Clip",
+    name: track.type === "drumkit" ? "Beat Clip" : "Clip",
     bar,
     lengthBars,
     patternBars: 1,
@@ -115,18 +134,18 @@ export function createEmptyClip(track, bar = 0, lengthBars = 2) {
 }
 
 export function createBlankProject() {
-  const tDrum = createDrumTrack("trk_1");
-  const tKeys = createInstrumentTrack("fmkeys", "trk_2");
+  const t1 = createPlainTrack(1, "trk_1");
+  const t2 = createPlainTrack(2, "trk_2");
   return {
-    version: 2,
+    version: 3,
     projectId: null,
     title: "New Session",
     bpm: 120,
     swing: 0,
     masterVolume: 0.88,
     scale: "minor",
-    selectedTrackId: tDrum.id,
-    tracks: [tDrum, tKeys],
+    selectedTrackId: t1.id,
+    tracks: [t1, t2],
     clips: [],
   };
 }

@@ -374,7 +374,7 @@ export async function importExternalInstrumentFile(file, audioCtx) {
 export function exportSynthPatchJson(track) {
   const payload = {
     format: "sonora-synth-patch-v1",
-    name: track.name || "Custom Synth",
+    name: track.pluginName || track.name || "Custom Synth",
     engine: track.engine === "fmkeys" ? "fmkeys" : "synth",
     color: track.color || "#54a0ff",
     synth: { ...(track.synth || {}) },

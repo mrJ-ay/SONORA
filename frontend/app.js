@@ -8,6 +8,7 @@ import {
 } from "./audio/externalLoader.js";
 import {
   DEMO_PROJECTS,
+  createPlainTrack,
   createDrumTrack,
   createInstrumentTrack,
   createSamplerTrack,
@@ -19,7 +20,7 @@ import { ArrangementView } from "./ui/arrangement.js";
 import { WindowManager } from "./ui/windowManager.js";
 
 const TOKEN_KEY = "sonora_oneid_token";
-const LOCAL_AUTOSAVE_KEY = "sonora_autosave_v3";
+const LOCAL_AUTOSAVE_KEY = "sonora_autosave_v4";
 
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let currentUser = null;
@@ -57,9 +58,7 @@ const winMixerEl = document.querySelector("#winMixerEl");
 const dropOverlay = document.querySelector("#dropOverlay");
 const externalInstFileInput = document.querySelector("#externalInstFileInput");
 
-const addDrumTrackBtn = document.querySelector("#addDrumTrackBtn");
-const addInstTrackSelect = document.querySelector("#addInstTrackSelect");
-const importExternalTrackBtn = document.querySelector("#importExternalTrackBtn");
+const addTrackBtn = document.querySelector("#addTrackBtn");
 const trackHeadersList = document.querySelector("#trackHeadersList");
 const arrangementWrap = document.querySelector("#arrangementWrap");
 const arrangementCanvas = document.querySelector("#arrangementCanvas");
@@ -213,6 +212,77 @@ function cleanupOrphanClipWindows() {
   }
 }
 
+function getTrackSlotLabel(trk) {
+  if (!trk || trk.type === "empty" || trk.engine === "none") return "＋ 악기 선택";
+  if (trk.type === "drumkit") return `🥁 ${trk.pluginName || "Drum Rack"}`;
+  if (trk.engine === "sampler") return `🔊 ${trk.pluginName || trk.name}`;
+  if (trk.engine === "sf2") return `🎼 ${trk.pluginName || trk.name}`;
+  return `🎛 ${trk.pluginName || trk.name}`;
+}
+
+function mountPluginOnTrack(trk, spec) {
+  if (!trk) return;
+  // Close incompatible open clip editor windows for this track if switching between drumkit <-> melodic or clearing
+  const wasDrum = trk.type === "drumkit";
+  const willBeDrum = spec.mode === "drumkit";
+  const willBeEmpty = spec.mode === "empty";
+  if (willBeEmpty || (wasDrum && !willBeDrum)) {
+    for (const [, bs] of [...openBeatSeqs.entries()]) {
+      if (bs.trackId === trk.id) wm.closeWindow(bs.winId);
+    }
+  }
+  if (willBeEmpty || (!wasDrum && willBeDrum)) {
+    for (const [, pr] of [...openPianoRolls.entries()]) {
+      if (pr.trackId === trk.id) wm.closeWindow(pr.winId);
+    }
+  }
+
+  if (spec.mode === "empty") {
+    trk.type = "empty";
+    trk.engine = "none";
+    trk.pluginName = "";
+    trk.presetId = "";
+    trk.category = "EMPTY";
+    trk.color = "#64748b";
+    trk.synth = {};
+  } else if (spec.mode === "drumkit") {
+    trk.type = "drumkit";
+    trk.engine = "drumkit";
+    trk.pluginName = "Studio Drum Rack";
+    trk.category = "DRUM";
+    trk.color = "#ff5c5c";
+    // Ensure drumSteps exist on any existing clips on this track
+    for (const cl of project.clips || []) {
+      if (cl.trackId === trk.id) {
+        if (!cl.drumSteps) cl.drumSteps = {};
+        for (const r of DRUM_ROWS) {
+          if (!Array.isArray(cl.drumSteps[r.key])) cl.drumSteps[r.key] = new Array(16).fill(0);
+        }
+      }
+    }
+  } else if (spec.mode === "preset") {
+    const p = INSTRUMENT_PRESETS.find((x) => x.id === spec.presetId) || INSTRUMENT_PRESETS[0];
+    trk.type = "instrument";
+    trk.presetId = p.id;
+    trk.pluginName = p.name;
+    trk.category = p.category;
+    trk.color = p.color;
+    trk.engine = p.engine;
+    trk.baseMidi = p.baseMidi;
+    trk.synth = { ...p.synth };
+  } else if (spec.mode === "external") {
+    applyExternalResultToTrack(trk, spec.res);
+  }
+
+  engine.rebuildMixGraph();
+  persistLocal();
+  renderTrackHeaders();
+  renderMixer();
+  arrangementView.draw();
+  const iw = openInstWins.get(trk.id);
+  if (iw) iw.renderContent();
+}
+
 // TRACK HEADERS (LEFT SIDE OF ARRANGEMENT)
 function renderTrackHeaders() {
   trackHeadersList.innerHTML = "";
@@ -221,28 +291,33 @@ function renderTrackHeaders() {
   tracks.forEach((trk) => {
     const row = document.createElement("div");
     row.className = `track-header-row ${project.selectedTrackId === trk.id ? "selected" : ""}`;
-    row.style.borderLeftColor = trk.color || "#54a0ff";
+    row.style.borderLeftColor = trk.color || "#64748b";
 
+    const isEmpty = trk.type === "empty" || trk.engine === "none";
     const isDrum = trk.type === "drumkit";
-    const tagText = isDrum
-      ? "DRUM"
-      : trk.engine === "sampler"
-        ? "SAMPLER"
-        : trk.engine === "sf2"
-          ? "SF2"
-          : (trk.category || "SYNTH").toUpperCase();
+    const tagText = isEmpty
+      ? "비어있음"
+      : isDrum
+        ? "DRUM"
+        : trk.engine === "sampler"
+          ? "SAMPLER"
+          : trk.engine === "sf2"
+            ? "SF2"
+            : (trk.category || "SYNTH").toUpperCase();
+
+    const slotLabel = getTrackSlotLabel(trk);
 
     row.innerHTML = `
       <div class="th-top">
-        <span class="th-name" style="color:${trk.color || "#eef3fb"}" title="더블클릭하여 트랙 이름 변경">${escapeHtml(trk.name)}</span>
+        <span class="th-name" style="color:${isEmpty ? "#cbd5e1" : (trk.color || "#eef3fb")}" title="더블클릭하여 트랙 이름 변경">${escapeHtml(trk.name)}</span>
         <span class="th-type-tag">${escapeHtml(tagText)}</span>
       </div>
       <div class="th-bottom">
         <div class="th-btn-group">
           <button class="ms-btn mute ${trk.muted ? "active" : ""}" data-act="mute" type="button" title="뮤트">M</button>
           <button class="ms-btn solo ${trk.solo ? "active" : ""}" data-act="solo" type="button" title="솔로">S</button>
-          ${!isDrum ? `<button class="trk-action-btn" data-act="synth" type="button" title="독립 가상악기/신스/샘플러 창 열기">🎛 악기창</button>` : ""}
-          <button class="trk-action-btn" data-act="editclip" type="button" title="독립 ${isDrum ? "비트 시퀀서" : "피아노롤"} 창 열기">${isDrum ? "🥁 비트창" : "🎹 피아노롤"}</button>
+          <button class="trk-slot-btn ${isEmpty ? "unassigned" : ""}" data-act="slot" type="button" title="이 트랙에 넣을 악기/드럼/외부파일 선택 및 설정">${escapeHtml(slotLabel)}</button>
+          ${!isEmpty ? `<button class="trk-action-btn" data-act="editclip" type="button" title="독립 ${isDrum ? "비트 시퀀서" : "피아노롤"} 창 열기">${isDrum ? "🥁 비트창" : "🎹 피아노롤"}</button>` : ""}
         </div>
         <button class="ms-btn" data-act="delete" type="button" title="트랙 삭제">✕</button>
       </div>
@@ -272,7 +347,7 @@ function renderTrackHeaders() {
         persistLocal();
         renderTrackHeaders();
         renderMixer();
-      } else if (act === "synth") {
+      } else if (act === "slot") {
         openInstrumentWindow(trk.id);
       } else if (act === "editclip") {
         let clip = (project.clips || []).find((c) => c.trackId === trk.id && c.id === selectedClipId)
@@ -303,7 +378,6 @@ function renderTrackHeaders() {
       }
     });
 
-    // Double-click track name to rename inline
     row.querySelector(".th-name").addEventListener("dblclick", (e) => {
       e.stopPropagation();
       const next = prompt("트랙 이름을 입력하세요:", trk.name);
@@ -319,41 +393,17 @@ function renderTrackHeaders() {
   });
 }
 
-// ADD TRACKS + EXTERNAL INSTRUMENT LOADER
-addDrumTrackBtn.addEventListener("click", () => {
-  const drumCount = (project.tracks || []).filter((t) => t.type === "drumkit").length;
-  const newTrack = createDrumTrack(undefined, {
-    name: drumCount === 0 ? "Studio Drum Kit" : `Drum Kit ${drumCount + 1}`,
-  });
+// SINGLE PLAIN TRACK ADDITION ("+ 트랙 추가" -> Empty Track -> user chooses what to put inside!)
+addTrackBtn.addEventListener("click", () => {
+  const nextNum = (project.tracks?.length || 0) + 1;
+  const newTrack = createPlainTrack(nextNum);
   project.tracks.push(newTrack);
   project.selectedTrackId = newTrack.id;
   engine.graph = null;
   engine.rebuildMixGraph();
   persistLocal();
   renderAll();
-  showToast(`'${newTrack.name}' 트랙이 추가되었습니다.`);
-});
-
-addInstTrackSelect.addEventListener("change", () => {
-  const presetId = addInstTrackSelect.value;
-  if (!presetId) return;
-  addInstTrackSelect.value = "";
-
-  const newTrack = createInstrumentTrack(presetId);
-  project.tracks.push(newTrack);
-  project.selectedTrackId = newTrack.id;
-  engine.graph = null;
-  engine.rebuildMixGraph();
-  persistLocal();
-  renderAll();
-  openInstrumentWindow(newTrack.id);
-  showToast(`'${newTrack.name}' 트랙 및 악기 창이 열렸습니다.`);
-});
-
-importExternalTrackBtn.addEventListener("click", () => {
-  pendingFileAction = { mode: "new_track" };
-  externalInstFileInput.value = "";
-  externalInstFileInput.click();
+  showToast(`'${newTrack.name}' 추가 완료! 트랙의 [＋ 악기 선택]을 눌러 넣을 악기를 골라주세요.`);
 });
 
 async function handleImportedFiles(fileList, actionContext) {
@@ -371,7 +421,6 @@ async function handleImportedFiles(fileList, actionContext) {
         if (trk) {
           if (!trk.drumSamples) trk.drumSamples = {};
           trk.drumSamples[actionContext.drumKey] = { sampleId: res.sampleId, name: res.name };
-          // Also check customDrumRows
           if (Array.isArray(trk.customDrumRows)) {
             const cRow = trk.customDrumRows.find((r) => r.key === actionContext.drumKey);
             if (cRow) {
@@ -380,8 +429,12 @@ async function handleImportedFiles(fileList, actionContext) {
             }
           }
           persistLocal();
-          const bs = openBeatSeqs.get(actionContext.clipId);
-          if (bs) bs.renderGrid();
+          if (actionContext.clipId) {
+            const bs = openBeatSeqs.get(actionContext.clipId);
+            if (bs) bs.renderGrid();
+          }
+          const iw = openInstWins.get(trk.id);
+          if (iw) iw.renderContent();
           engine.previewDrumRow(trk, actionContext.drumKey);
           showToast(`드럼 패드에 '${res.name}' 샘플이 적용되었습니다!`);
         }
@@ -406,8 +459,12 @@ async function handleImportedFiles(fileList, actionContext) {
             baseMidi: 48,
           });
           persistLocal();
-          const bs = openBeatSeqs.get(actionContext.clipId);
-          if (bs) bs.renderGrid();
+          if (actionContext.clipId) {
+            const bs = openBeatSeqs.get(actionContext.clipId);
+            if (bs) bs.renderGrid();
+          }
+          const iw = openInstWins.get(trk.id);
+          if (iw) iw.renderContent();
           engine.previewDrumRow(trk, key);
           showToast(`커스텀 드럼 패드 '${res.name}' 추가 완료!`);
         }
@@ -417,50 +474,26 @@ async function handleImportedFiles(fileList, actionContext) {
       if (actionContext.mode === "replace_track") {
         const trk = (project.tracks || []).find((t) => t.id === actionContext.trackId);
         if (!trk) continue;
-        applyExternalResultToTrack(trk, res);
-        persistLocal();
-        renderTrackHeaders();
-        renderMixer();
-        const iw = openInstWins.get(trk.id);
-        if (iw) iw.renderContent();
+        mountPluginOnTrack(trk, { mode: "external", res });
         engine.previewTrackNote(trk, 60, 0.35);
-        showToast(`'${trk.name}'에 외부 파일이 적용되었습니다!`);
+        showToast(`'${trk.name}'에 '${trk.pluginName}' 장착 완료!`);
         continue;
       }
 
-      // Default: create a brand-new track from external file!
-      let newTrack;
-      if (res.kind === "sample") {
-        newTrack = createSamplerTrack({ sampleId: res.sampleId, name: res.name });
-      } else if (res.kind === "sf2") {
-        const firstInstName = res.instruments[0]?.name || res.fileName.replace(/\.sf2$/i, "");
-        newTrack = createSf2Track({ sf2Id: res.sf2Id, sf2InstIndex: 0, name: firstInstName });
-      } else if (res.kind === "synth_patch") {
-        newTrack = createInstrumentTrack("cyberlead", undefined, {
-          name: res.name,
-          color: res.color,
-          synth: res.synth,
-        });
-        newTrack.engine = res.engine;
-        newTrack.category = "EXT PATCH";
-      }
-
-      if (newTrack) {
-        project.tracks.push(newTrack);
-        project.selectedTrackId = newTrack.id;
-        const starterClip = createEmptyClip(newTrack, 0, 2);
-        starterClip.name = `${newTrack.name} Clip`;
-        project.clips.push(starterClip);
-        selectedClipId = starterClip.id;
-
+      // Drag & Drop onto desktop: if selected track is empty, mount directly onto it; else create plain track & mount!
+      let targetTrack = (project.tracks || []).find(
+        (t) => t.id === project.selectedTrackId && (t.type === "empty" || t.engine === "none")
+      );
+      if (!targetTrack) {
+        targetTrack = createPlainTrack((project.tracks?.length || 0) + 1);
+        project.tracks.push(targetTrack);
+        project.selectedTrackId = targetTrack.id;
         engine.graph = null;
-        engine.rebuildMixGraph();
-        persistLocal();
-        renderAll();
-        openInstrumentWindow(newTrack.id);
-        engine.previewTrackNote(newTrack, 60, 0.35);
-        showToast(`외부 악기 '${newTrack.name}' 트랙이 불러와졌습니다!`);
       }
+      mountPluginOnTrack(targetTrack, { mode: "external", res });
+      openInstrumentWindow(targetTrack.id);
+      engine.previewTrackNote(targetTrack, 60, 0.35);
+      showToast(`'${targetTrack.name}'에 외부 악기 '${targetTrack.pluginName}' 장착 완료!`);
     } catch (err) {
       showToast(err.message || "파일을 불러오지 못했습니다.");
     }
@@ -468,15 +501,16 @@ async function handleImportedFiles(fileList, actionContext) {
 }
 
 function applyExternalResultToTrack(trk, res) {
+  trk.type = "instrument";
   if (res.kind === "sample") {
     trk.engine = "sampler";
     trk.sampleId = res.sampleId;
     trk.rootMidi = 60;
-    trk.name = res.name;
+    trk.pluginName = res.name;
     trk.category = "SAMPLER";
     trk.color = "#1dd1a1";
     trk.synth = {
-      ...trk.synth,
+      ...(trk.synth || {}),
       cutoff: 12000,
       resonance: 1.0,
       attack: 0.004,
@@ -492,14 +526,24 @@ function applyExternalResultToTrack(trk, res) {
     trk.engine = "sf2";
     trk.sf2Id = res.sf2Id;
     trk.sf2InstIndex = 0;
-    trk.name = res.instruments[0]?.name || res.fileName.replace(/\.sf2$/i, "");
+    trk.pluginName = res.instruments[0]?.name || res.fileName.replace(/\.sf2$/i, "");
     trk.category = "SF2";
     trk.color = "#ffd166";
+    trk.synth = {
+      cutoff: 14000,
+      resonance: 0.9,
+      attack: 0.005,
+      decay: 0.4,
+      sustain: 0.82,
+      release: 0.28,
+      detune: 0,
+    };
   } else if (res.kind === "synth_patch") {
     trk.engine = res.engine;
-    trk.name = res.name;
+    trk.pluginName = res.name;
     trk.category = "EXT PATCH";
-    trk.synth = { ...trk.synth, ...res.synth };
+    trk.color = res.color || "#54a0ff";
+    trk.synth = { ...(trk.synth || {}), ...res.synth };
   }
 }
 
@@ -529,7 +573,7 @@ window.addEventListener("drop", async (e) => {
   dropOverlay.hidden = true;
   if (!e.dataTransfer?.files?.length) return;
   e.preventDefault();
-  await handleImportedFiles([...e.dataTransfer.files], { mode: "new_track" });
+  await handleImportedFiles([...e.dataTransfer.files], { mode: "drop" });
 });
 
 // FLOATING CLIP WINDOWS (PIANO ROLL OR BEAT SEQUENCER)
@@ -537,6 +581,12 @@ function openClipWindow(trackId, clipId) {
   const track = (project.tracks || []).find((t) => t.id === trackId);
   const clip = (project.clips || []).find((c) => c.id === clipId);
   if (!track || !clip) return;
+
+  if (track.type === "empty" || track.engine === "none") {
+    openInstrumentWindow(track.id);
+    showToast("먼저 이 트랙에 넣을 악기나 드럼을 선택해 주세요!");
+    return;
+  }
 
   if (track.type === "drumkit") {
     openBeatSeqWindow(track, clip);
@@ -956,10 +1006,10 @@ function openBeatSeqWindow(track, clip) {
   syncLoopBtn();
 }
 
-// 3) INDEPENDENT FLOATING INSTRUMENT / SYNTH / SAMPLER / SF2 WINDOW
+// 3) INDEPENDENT FLOATING TRACK PLUGIN / INSTRUMENT / DRUM RACK / EXTERNAL LOADER WINDOW
 function openInstrumentWindow(trackId) {
   const trk = (project.tracks || []).find((t) => t.id === trackId);
-  if (!trk || trk.type === "drumkit") return;
+  if (!trk) return;
 
   const winId = `win-inst-${trk.id}`;
   if (openInstWins.has(trk.id)) {
@@ -970,13 +1020,13 @@ function openInstrumentWindow(trackId) {
 
   const win = wm.createWindow({
     id: winId,
-    title: `가상악기 / 신스 · ${trk.name}`,
+    title: `트랙 악기 슬롯 · ${trk.name}`,
     icon: "🎛️",
-    accentColor: trk.color || "#ff6bcb",
+    accentColor: trk.color || "#64748b",
     closable: true,
-    width: 500,
-    height: 510,
-    minWidth: 380,
+    width: 530,
+    height: 520,
+    minWidth: 390,
     minHeight: 340,
     onClose: () => {
       openInstWins.delete(trk.id);
@@ -986,13 +1036,173 @@ function openInstrumentWindow(trackId) {
   const renderContent = () => {
     const t = (project.tracks || []).find((x) => x.id === trackId);
     if (!t) return;
+
+    const isEmpty = t.type === "empty" || t.engine === "none";
+    const isDrum = t.type === "drumkit";
+    const presetOpts = INSTRUMENT_PRESETS.map(
+      (p) =>
+        `<option value="${p.id}" ${!isEmpty && !isDrum && t.presetId === p.id && t.engine !== "sampler" && t.engine !== "sf2" ? "selected" : ""}>🎹 ${p.name} (${p.category})</option>`
+    ).join("");
+
+    // CASE A: EMPTY / UNASSIGNED TRACK -> PLUGIN RACK BROWSER (CHOOSE WHAT TO MOUNT ON THIS TRACK)
+    if (isEmpty) {
+      wm.setWindowTitle(winId, `트랙 악기 선택 · ${t.name} (비어있음)`);
+      const cardsHtml = [
+        `
+          <button type="button" class="plugin-card-btn" data-mount-drum="1" style="border-left:3px solid #ff5c5c;">
+            <span class="pc-cat" style="color:#ff5c5c;">DRUM RACK · BEAT SEQUENCER</span>
+            <span class="pc-name">🥁 Studio Drum Rack</span>
+            <span class="pc-desc">808·어쿠스틱 드럼 + 외부 샘플 패드 & 비트 시퀀서</span>
+          </button>
+        `,
+        ...INSTRUMENT_PRESETS.map(
+          (p) => `
+            <button type="button" class="plugin-card-btn" data-mount-preset="${p.id}" style="border-left:3px solid ${p.color};">
+              <span class="pc-cat" style="color:${p.color};">${escapeHtml(p.category)}</span>
+              <span class="pc-name">🎛️ ${escapeHtml(p.name)}</span>
+              <span class="pc-desc">${p.engine === "fmkeys" ? "2-Op FM 일렉트릭 건반/플럭" : "듀얼 오실레이터 아날로그 신스"}</span>
+            </button>
+          `
+        ),
+      ].join("");
+
+      win.bodyEl.innerHTML = `
+        <div class="inst-win-scroll">
+          <div style="font-size:0.78rem;color:var(--muted);line-height:1.45;">
+            <strong style="color:var(--text)">${escapeHtml(t.name)}</strong>에 넣을 가상악기, 드럼 랙 또는 내 컴퓨터의 외부 악기 파일을 선택하세요. 장착한 뒤에도 언제든 교체하거나 비울 수 있습니다.
+          </div>
+
+          <button type="button" class="ext-drop-btn" data-role="load-ext">
+            📂 내 컴퓨터에서 외부 악기 · 샘플(.wav/.mp3/.ogg/.flac) · 사운드폰트(.sf2) · 신스패치(.json) 불러오기
+          </button>
+
+          <div style="font-size:0.7rem;font-weight:800;color:var(--muted);letter-spacing:0.04em;margin-top:2px;">내장 드럼 랙 & 신스 가상악기</div>
+          <div class="plugin-rack-grid">
+            ${cardsHtml}
+          </div>
+        </div>
+      `;
+
+      win.bodyEl.querySelector('[data-role="load-ext"]').addEventListener("click", () => {
+        pendingFileAction = { mode: "replace_track", trackId: t.id };
+        externalInstFileInput.value = "";
+        externalInstFileInput.click();
+      });
+
+      win.bodyEl.querySelector("[data-mount-drum]")?.addEventListener("click", () => {
+        mountPluginOnTrack(t, { mode: "drumkit" });
+        engine.previewDrumRow(t, "kick");
+        showToast(`'${t.name}'에 Studio Drum Rack 장착 완료!`);
+      });
+
+      win.bodyEl.querySelectorAll("[data-mount-preset]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const presetId = btn.dataset.mountPreset;
+          mountPluginOnTrack(t, { mode: "preset", presetId });
+          engine.previewTrackNote(t, 60, 0.32);
+          showToast(`'${t.name}'에 '${t.pluginName}' 장착 완료!`);
+        });
+      });
+      return;
+    }
+
+    // CASE B: DRUM RACK MOUNTED ON TRACK
+    if (isDrum) {
+      wm.setWindowTitle(winId, `드럼 랙 · ${t.name} (${t.pluginName || "Studio Drum Rack"})`);
+      const rows = getTrackDrumRows(t);
+      const padsHtml = rows
+        .map((r) => {
+          const customSmp = t.drumSamples?.[r.key]?.name || (r.drumSampleId ? r.name : "");
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;background:#0b1018;border:1px solid var(--border);border-radius:7px;">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                <span style="width:9px;height:9px;border-radius:50%;background:${r.color || "#ff5c5c"};flex-shrink:0;"></span>
+                <strong style="font-size:0.78rem;color:var(--text);">${escapeHtml(r.name)}</strong>
+                <span style="font-size:0.68rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  ${customSmp ? `🔊 샘플: ${escapeHtml(customSmp)}` : "내장 드럼 합성"}
+                </span>
+              </div>
+              <div style="display:flex;gap:5px;flex-shrink:0;">
+                <button type="button" class="mini-btn" data-preview-pad="${r.key}">▶ 테스트</button>
+                <button type="button" class="mini-btn" data-sample-pad="${r.key}">📂 샘플 교체</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+
+      win.bodyEl.innerHTML = `
+        <div class="inst-win-scroll">
+          <div class="inst-top-actions">
+            <select class="mini-select" data-role="plugin-switch" title="이 트랙의 악기를 교체하거나 비웁니다">
+              <option value="">🔄 다른 악기로 교체 / 슬롯 비우기...</option>
+              <option value="__empty__">🚫 슬롯 비우기 (빈 트랙으로 초기화)</option>
+              ${presetOpts}
+            </select>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;">
+              <button class="mini-btn accent" data-role="open-beatseq" type="button">🥁 비트 시퀀서 창 열기</button>
+              <button class="mini-btn" data-role="add-drum-pad" type="button">+ 📂 커스텀 패드 추가</button>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${padsHtml}
+          </div>
+        </div>
+      `;
+
+      win.bodyEl.querySelector('[data-role="plugin-switch"]').addEventListener("change", (e) => {
+        const val = e.target.value;
+        if (!val) return;
+        if (val === "__empty__") {
+          mountPluginOnTrack(t, { mode: "empty" });
+          showToast(`'${t.name}' 악기 슬롯을 비웠습니다.`);
+        } else {
+          mountPluginOnTrack(t, { mode: "preset", presetId: val });
+          engine.previewTrackNote(t, 60, 0.3);
+          showToast(`'${t.name}'에 '${t.pluginName}' 장착 완료!`);
+        }
+      });
+
+      win.bodyEl.querySelector('[data-role="open-beatseq"]').addEventListener("click", () => {
+        let clip =
+          (project.clips || []).find((c) => c.trackId === t.id && c.id === selectedClipId) ||
+          (project.clips || []).find((c) => c.trackId === t.id);
+        if (!clip) {
+          clip = createEmptyClip(t, 0, 2);
+          project.clips.push(clip);
+          persistLocal();
+          arrangementView.resizeAndDraw();
+        }
+        selectedClipId = clip.id;
+        openClipWindow(t.id, clip.id);
+      });
+
+      win.bodyEl.querySelector('[data-role="add-drum-pad"]').addEventListener("click", () => {
+        pendingFileAction = { mode: "add_drum_pad", trackId: t.id };
+        externalInstFileInput.value = "";
+        externalInstFileInput.click();
+      });
+
+      win.bodyEl.querySelectorAll("[data-preview-pad]").forEach((btn) => {
+        btn.addEventListener("click", () => engine.previewDrumRow(t, btn.dataset.previewPad));
+      });
+
+      win.bodyEl.querySelectorAll("[data-sample-pad]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          pendingFileAction = { mode: "drum_pad", trackId: t.id, drumKey: btn.dataset.samplePad };
+          externalInstFileInput.value = "";
+          externalInstFileInput.click();
+        });
+      });
+      return;
+    }
+
+    // CASE C: MELODIC INSTRUMENT (SYNTH / FMKEYS / EXTERNAL SAMPLER / SOUNDFONT2)
     if (!t.synth) t.synth = {};
     const s = t.synth;
-    wm.setWindowTitle(winId, `가상악기 / 신스 · ${t.name}`);
-
-    const presetOpts = INSTRUMENT_PRESETS.map(
-      (p) => `<option value="${p.id}" ${t.presetId === p.id && t.engine !== "sampler" && t.engine !== "sf2" ? "selected" : ""}>${p.name} (${p.category})</option>`
-    ).join("");
+    const plugLabel = t.pluginName || t.name;
+    wm.setWindowTitle(winId, `가상악기 / 신스 · ${t.name} (${plugLabel})`);
 
     let specificPanelHtml = "";
 
@@ -1005,7 +1215,7 @@ function openInstrumentWindow(trackId) {
       specificPanelHtml = `
         <div class="waveform-box">
           <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--muted);">
-            <span>오디오 샘플러: <strong style="color:var(--green)">${escapeHtml(smp?.name || t.name)}</strong></span>
+            <span>오디오 샘플러: <strong style="color:var(--green)">${escapeHtml(smp?.name || plugLabel)}</strong></span>
             <span>${smp ? `${smp.duration.toFixed(2)}s · ${smp.sampleRate}Hz` : "샘플 메모리 로드됨"}</span>
           </div>
           <canvas class="waveform-canvas" data-role="wave-canvas" width="440" height="68"></canvas>
@@ -1038,7 +1248,7 @@ function openInstrumentWindow(trackId) {
       ).join("");
       specificPanelHtml = `
         <div class="waveform-box">
-          <div style="font-size:0.75rem;color:var(--amber);font-weight:800;">🎼 SoundFont 2 (.sf2) 멀티샘플 가상악기: ${escapeHtml(sf2?.fileName || t.name)}</div>
+          <div style="font-size:0.75rem;color:var(--amber);font-weight:800;">🎼 SoundFont 2 (.sf2) 멀티샘플 가상악기: ${escapeHtml(sf2?.fileName || plugLabel)}</div>
           <label class="pr-label" style="margin-top:4px;">사운드폰트 내장 프리셋 선택
             <select class="mini-select" data-param="sf2InstIndex" style="flex:1;">${instOpts || "<option value='0'>Default Instrument</option>"}</select>
           </label>
@@ -1086,8 +1296,10 @@ function openInstrumentWindow(trackId) {
     win.bodyEl.innerHTML = `
       <div class="inst-win-scroll">
         <div class="inst-top-actions">
-          <select class="mini-select" data-role="preset-switch" title="내장 가상악기 프리셋으로 전환">
-            <option value="">내장 프리셋 변경...</option>
+          <select class="mini-select" data-role="plugin-switch" title="이 트랙의 악기를 교체하거나 슬롯을 비웁니다">
+            <option value="">🔄 악기 교체 / 슬롯 비우기...</option>
+            <option value="__empty__">🚫 슬롯 비우기 (빈 트랙으로 초기화)</option>
+            <option value="__drumkit__">🥁 Studio Drum Rack (드럼 시퀀서)</option>
             ${presetOpts}
           </select>
           <div style="display:flex;gap:5px;flex-wrap:wrap;">
@@ -1184,22 +1396,21 @@ function openInstrumentWindow(trackId) {
     drawWaveform();
 
     // Events inside instrument window
-    win.bodyEl.querySelector('[data-role="preset-switch"]').addEventListener("change", (e) => {
-      const pid = e.target.value;
-      const p = INSTRUMENT_PRESETS.find((x) => x.id === pid);
-      if (!p) return;
-      t.presetId = p.id;
-      t.name = p.name;
-      t.category = p.category;
-      t.color = p.color;
-      t.engine = p.engine;
-      t.synth = { ...p.synth };
-      persistLocal();
-      renderTrackHeaders();
-      renderMixer();
-      arrangementView.draw();
-      renderContent();
-      engine.previewTrackNote(t, 60, 0.3);
+    win.bodyEl.querySelector('[data-role="plugin-switch"]').addEventListener("change", (e) => {
+      const val = e.target.value;
+      if (!val) return;
+      if (val === "__empty__") {
+        mountPluginOnTrack(t, { mode: "empty" });
+        showToast(`'${t.name}' 악기 슬롯을 비웠습니다.`);
+      } else if (val === "__drumkit__") {
+        mountPluginOnTrack(t, { mode: "drumkit" });
+        engine.previewDrumRow(t, "kick");
+        showToast(`'${t.name}'에 Studio Drum Rack 장착 완료!`);
+      } else {
+        mountPluginOnTrack(t, { mode: "preset", presetId: val });
+        engine.previewTrackNote(t, 60, 0.3);
+        showToast(`'${t.name}'에 '${t.pluginName}' 장착 완료!`);
+      }
     });
 
     win.bodyEl.querySelector('[data-role="load-ext"]').addEventListener("click", () => {
@@ -1210,7 +1421,7 @@ function openInstrumentWindow(trackId) {
 
     win.bodyEl.querySelector('[data-role="export-patch"]').addEventListener("click", () => {
       exportSynthPatchJson(t);
-      showToast(`'${t.name}.synth.json' 패치 파일이 저장되었습니다.`);
+      showToast(`'${t.pluginName || t.name}.synth.json' 패치 파일이 저장되었습니다.`);
     });
 
     win.bodyEl.querySelectorAll("[data-param]").forEach((inp) => {
@@ -1230,10 +1441,10 @@ function openInstrumentWindow(trackId) {
           t.sf2InstIndex = Number(inp.value);
           const sf2 = getSf2Metadata(t.sf2Id);
           if (sf2?.instruments[t.sf2InstIndex]) {
-            t.name = sf2.instruments[t.sf2InstIndex].name;
+            t.pluginName = sf2.instruments[t.sf2InstIndex].name;
             renderTrackHeaders();
             renderMixer();
-            wm.setWindowTitle(winId, `가상악기 / 신스 · ${t.name}`);
+            wm.setWindowTitle(winId, `가상악기 / 신스 · ${t.name} (${t.pluginName})`);
           }
         } else if (param === "reverbSend" || param === "delaySend") {
           t[param] = Number(inp.value);
@@ -1302,11 +1513,13 @@ function renderMixer() {
   });
 
   for (const trk of project.tracks || []) {
+    const isEmpty = trk.type === "empty" || trk.engine === "none";
     const strip = document.createElement("div");
     strip.className = `mixer-strip ${project.selectedTrackId === trk.id ? "selected" : ""}`;
     strip.dataset.trackId = trk.id;
     strip.innerHTML = `
-      <span class="strip-name" style="color:${trk.color || "#eef3fb"}" title="${escapeHtml(trk.name)}">${escapeHtml(trk.name)}</span>
+      <span class="strip-name" style="color:${isEmpty ? "#cbd5e1" : (trk.color || "#eef3fb")}" title="${escapeHtml(trk.name)}">${escapeHtml(trk.name)}</span>
+      <button class="strip-slot-btn ${isEmpty ? "unassigned" : ""}" data-role="slot" type="button" title="이 트랙에 넣을 악기 선택 / 악기 설정창 열기">${escapeHtml(getTrackSlotLabel(trk))}</button>
       <div class="fader-meter-wrap">
         <input class="v-fader" data-role="vol" type="range" min="0" max="1.15" step="0.01" value="${trk.volume ?? 0.8}">
         <div class="meter-bar"><div class="meter-fill" data-role="meter"></div></div>
@@ -1333,6 +1546,14 @@ function renderMixer() {
       renderTrackHeaders();
       renderMixerSelection();
       arrangementView.draw();
+    });
+
+    strip.querySelector('[data-role="slot"]').addEventListener("click", () => {
+      project.selectedTrackId = trk.id;
+      renderTrackHeaders();
+      renderMixerSelection();
+      arrangementView.draw();
+      openInstrumentWindow(trk.id);
     });
 
     strip.querySelector('[data-role="vol"]').addEventListener("input", (e) => {

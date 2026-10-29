@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SONORA · Multi-Window Web DAW</title>
-  <link rel="stylesheet" href="style.css?v=20261029v4">
+  <link rel="stylesheet" href="style.css?v=20261029v6">
 </head>
 <body>
   <!-- TOP STUDIO BAR -->
@@ -71,29 +71,18 @@
           <span class="win-icon">🎞️</span>
           <span class="win-title-text">전체 편집기 · ARRANGEMENT</span>
           <div class="win-header-extra">
-            <button id="addDrumTrackBtn" class="add-track-btn drum" type="button">+ 🥁 드럼 트랙</button>
-            <select id="addInstTrackSelect" class="add-track-select">
-              <option value="">+ 🎹 내장 신스/악기 트랙...</option>
-              <option value="fmkeys">🎹 Velvet FM Keys (일렉피아노)</option>
-              <option value="cyberlead">⚡ Neon SuperSaw Lead (리드 신스)</option>
-              <option value="subbass">🔊 Analog Reesebass (베이스)</option>
-              <option value="lushpad">🌌 Horizon Lush Pad (앰비언트 패드)</option>
-              <option value="pluckarp">✨ Crystal Pluck (플럭)</option>
-              <option value="acidbass">🧪 303 Acid Bass (애시드)</option>
-              <option value="chiptune">👾 8-Bit Retro Pulse (칩튠)</option>
-            </select>
-            <button id="importExternalTrackBtn" class="add-track-btn external" type="button" title=".wav, .mp3, .ogg, .flac 샘플 악기 / .sf2 사운드폰트 / .json 신스 패치 파일 불러오기">📂 외부 악기·신스 불러오기</button>
+            <button id="addTrackBtn" class="add-track-btn plain" type="button" title="일반 빈 트랙 추가 (추가 후 트랙의 악기 슬롯에서 드럼/신스/외부악기 장착)">＋ 트랙 추가</button>
           </div>
         </div>
         <div class="win-controls">
-          <span class="win-hint-inline">빈 마디 클릭: 클립 생성 · 더블클릭: 개별 편집창 열기</span>
+          <span class="win-hint-inline">트랙 추가 후 [＋ 악기 선택]에서 드럼·신스·외부파일 장착 · 빈 마디 클릭: 클립 생성</span>
           <button type="button" class="win-ctrl-btn" data-win-act="min" title="최소화">─</button>
           <button type="button" class="win-ctrl-btn" data-win-act="max" title="최대화 / 복원">□</button>
         </div>
       </header>
       <div class="win-body arrangement-split">
         <div class="track-headers-wrap">
-          <div class="track-headers-ruler">TRACKS (드래그/더블클릭 편집)</div>
+          <div class="track-headers-ruler">TRACKS · 악기 슬롯(I/O)</div>
           <div id="trackHeadersList" class="track-headers-list"></div>
         </div>
         <div id="arrangementWrap" class="arrangement-canvas-wrap">
@@ -162,6 +151,6 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <script type="module" src="app.js?v=20261029v5"></script>
+  <script type="module" src="app.js?v=20261029v6"></script>
 </body>
 </html>

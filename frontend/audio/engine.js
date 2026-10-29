@@ -116,6 +116,7 @@ export function getTrackDrumRows(track) {
 }
 
 function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurSec) {
+  if (!track || track.type === "empty" || track.engine === "none") return;
   const strip = graph.strips.get(track.id);
   if (!strip) return;
 
@@ -219,7 +220,7 @@ export class SonoraEngine {
   }
 
   previewTrackNote(track, midi, durationSec = 0.26, velocity = 0.85) {
-    if (!track) return;
+    if (!track || track.type === "empty" || track.engine === "none") return false;
     this.ensureContext();
     const strip = this.graph?.strips.get(track.id);
     const dest = strip ? strip.input : this.graph.masterBus;
@@ -229,6 +230,7 @@ export class SonoraEngine {
     } else {
       triggerInstrumentVoice(this.ctx, dest, track, midi, this.ctx.currentTime, durationSec, velocity);
     }
+    return true;
   }
 
   previewDrumRow(track, drumKey) {

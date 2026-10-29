@@ -155,10 +155,13 @@ export class ArrangementView {
         clip.bar = Math.max(0, Math.min(pos.bars - 1, this.dragState.origBar + dBar));
         const nextTrackIdx = Math.max(0, Math.min(tracks.length - 1, this.dragState.origTrackIdx + dTrack));
         const targetTrack = tracks[nextTrackIdx];
-        // Only move across tracks of compatible type (drumkit <-> drumkit, instrument <-> instrument)
         const curTrack = tracks.find((t) => t.id === clip.trackId);
-        if (targetTrack && curTrack && targetTrack.type === curTrack.type) {
-          clip.trackId = targetTrack.id;
+        if (targetTrack && curTrack) {
+          const curIsDrum = curTrack.type === "drumkit";
+          const tgtIsDrum = targetTrack.type === "drumkit";
+          if (curIsDrum === tgtIsDrum || targetTrack.type === "empty" || curTrack.type === "empty") {
+            clip.trackId = targetTrack.id;
+          }
         }
         this.draw();
       } else if (this.dragState.mode === "resize") {

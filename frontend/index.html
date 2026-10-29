@@ -139,30 +139,6 @@
   <!-- HIDDEN EXTERNAL INSTRUMENT FILE INPUT -->
   <input id="externalInstFileInput" type="file" accept=".wav,.mp3,.ogg,.flac,.m4a,.webm,.sf2,.json" multiple hidden>
 
-  <!-- ONEID LOGIN MODAL -->
-  <div id="loginModal" class="modal-backdrop" hidden>
-    <div class="modal-card">
-      <div class="modal-head">
-        <h3>ONEID 통합 계정 로그인</h3>
-        <button class="modal-close" data-close="loginModal" type="button">✕</button>
-      </div>
-      <p class="modal-desc">ONEID 계정으로 로그인하면 SONORA 멀티트랙 프로젝트를 클라우드에 저장하고 어디서든 불러올 수 있습니다.</p>
-      <form id="loginForm" class="modal-form">
-        <label>아이디 또는 이메일
-          <input id="loginUsername" type="text" required autocomplete="username" placeholder="ONEID 아이디">
-        </label>
-        <label>비밀번호
-          <input id="loginPassword" type="password" required autocomplete="current-password" placeholder="비밀번호">
-        </label>
-        <div id="loginError" class="form-error" hidden></div>
-        <div class="modal-actions">
-          <a class="studio-link" href="https://oneid-icvq.onrender.com" target="_blank" rel="noopener">ONEID 계정 만들기 ↗</a>
-          <button class="studio-btn primary" type="submit">로그인</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
   <!-- CLOUD / LOCAL PROJECT SAVE & LOAD MODAL -->
   <div id="cloudModal" class="modal-backdrop" hidden>
     <div class="modal-card wide">
@@ -186,6 +162,6 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <script type="module" src="app.js?v=20261029v4"></script>
+  <script type="module" src="app.js?v=20261029v5"></script>
 </body>
 </html>

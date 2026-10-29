@@ -67,9 +67,14 @@ const arrangementCanvas = document.querySelector("#arrangementCanvas");
 const mixerStrips = document.querySelector("#mixerStrips");
 const unmuteAllBtn = document.querySelector("#unmuteAllBtn");
 
-const loginModal = document.querySelector("#loginModal");
-const loginForm = document.querySelector("#loginForm");
-const loginError = document.querySelector("#loginError");
+const ONEID_API_URL =
+  location.hostname === "localhost" || location.hostname === "127.0.0.1"
+    ? "http://127.0.0.1:8000"
+    : "https://oneid-icvq.onrender.com";
+const ONEID_CLIENT_ID = "sonora";
+const ONEID_VERIFIER_KEY = "sonora_oneid_verifier";
+const ONEID_STATE_KEY = "sonora_oneid_state";
+
 const cloudModal = document.querySelector("#cloudModal");
 const cloudStatusMsg = document.querySelector("#cloudStatusMsg");
 const cloudList = document.querySelector("#cloudList");
@@ -1539,6 +1544,80 @@ async function api(path, opts = {}) {
   return data;
 }
 
+function base64UrlEncode(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomUrlSafe(byteLen = 32) {
+  const bytes = new Uint8Array(byteLen);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+async function startOneIdLogin() {
+  persistLocal();
+  const verifier = randomUrlSafe(48);
+  const state = randomUrlSafe(24);
+  const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const challenge = base64UrlEncode(new Uint8Array(hashBuf));
+  const redirectUri = `${location.origin}${location.pathname}`;
+
+  sessionStorage.setItem(ONEID_VERIFIER_KEY, verifier);
+  sessionStorage.setItem(ONEID_STATE_KEY, state);
+
+  const query = new URLSearchParams({
+    client_id: ONEID_CLIENT_ID,
+    redirect_uri: redirectUri,
+    code_challenge: challenge,
+    state,
+  });
+  location.assign(`${ONEID_API_URL}/login.html?${query}`);
+}
+
+async function handleOneIdCallback() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  if (!code) return;
+
+  const state = params.get("state");
+  const expectedState = sessionStorage.getItem(ONEID_STATE_KEY);
+  const verifier = sessionStorage.getItem(ONEID_VERIFIER_KEY);
+  history.replaceState(null, "", `${location.pathname}${location.hash}`);
+  sessionStorage.removeItem(ONEID_STATE_KEY);
+  sessionStorage.removeItem(ONEID_VERIFIER_KEY);
+
+  if (!state || state !== expectedState || !verifier) {
+    showToast("ONEID 로그인 상태 검증에 실패했습니다. 다시 시도해 주세요.");
+    return;
+  }
+
+  try {
+    const redirectUri = `${location.origin}${location.pathname}`;
+    const res = await fetch(`${ONEID_API_URL}/api/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: ONEID_CLIENT_ID,
+        redirect_uri: redirectUri,
+        code,
+        code_verifier: verifier,
+      }),
+    });
+    const session = await res.json().catch(() => ({}));
+    if (!res.ok || !session.access_token) {
+      throw new Error(session.detail || "ONEID 인증 토큰 발급에 실패했습니다.");
+    }
+    token = session.access_token;
+    currentUser = session.user || null;
+    localStorage.setItem(TOKEN_KEY, token);
+    showToast(`${currentUser?.nickname || currentUser?.username || "ONEID"}님 로그인 완료!`);
+  } catch (err) {
+    showToast(err.message || "ONEID 로그인 처리 중 오류가 발생했습니다.");
+  }
+}
+
 function renderAuth() {
   if (currentUser) {
     const label = currentUser.nickname || currentUser.name || currentUser.username;
@@ -1556,45 +1635,22 @@ function renderAuth() {
   } else {
     authArea.innerHTML = `<button id="loginOpenBtn" class="studio-btn primary" type="button">ONEID 로그인</button>`;
     authArea.querySelector("#loginOpenBtn").addEventListener("click", () => {
-      loginError.hidden = true;
-      loginModal.hidden = false;
+      startOneIdLogin();
     });
   }
 }
 
 document.querySelectorAll("[data-close]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.getElementById(btn.dataset.close).hidden = true;
+    const el = document.getElementById(btn.dataset.close);
+    if (el) el.hidden = true;
   });
-});
-
-loginForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  loginError.hidden = true;
-  const username = document.querySelector("#loginUsername").value.trim();
-  const password = document.querySelector("#loginPassword").value;
-  try {
-    const res = await api("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-    token = res.access_token;
-    currentUser = res.user;
-    localStorage.setItem(TOKEN_KEY, token);
-    loginModal.hidden = true;
-    loginForm.reset();
-    renderAuth();
-    showToast(`${currentUser.nickname || currentUser.username}님 환영합니다!`);
-  } catch (err) {
-    loginError.textContent = err.message;
-    loginError.hidden = false;
-  }
 });
 
 async function refreshCloudList() {
   cloudList.innerHTML = "";
   if (!currentUser) {
-    cloudStatusMsg.textContent = "클라우드 저장/불러오기는 ONEID 로그인 후 이용할 수 있습니다. (비로그인 시 로컬 파일 저장을 이용해 주세요)";
+    cloudStatusMsg.textContent = "클라우드 저장/불러오기는 ONEID 통합 로그인 후 이용할 수 있습니다. (비로그인 시 로컬 파일 저장을 이용해 주세요)";
     return;
   }
   cloudStatusMsg.textContent = "내 클라우드 프로젝트 목록을 불러오는 중...";
@@ -1634,7 +1690,7 @@ cloudBtn.addEventListener("click", () => {
 async function saveToCloud(asNew = false) {
   if (!currentUser) {
     cloudModal.hidden = true;
-    loginModal.hidden = false;
+    startOneIdLogin();
     return;
   }
   try {
@@ -1767,6 +1823,8 @@ function renderAll() {
       }
     }
   } catch {}
+
+  await handleOneIdCallback();
 
   if (token) {
     try {

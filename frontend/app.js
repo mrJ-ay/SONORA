@@ -1550,38 +1550,46 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
   const openInstBtn = win.bodyEl.querySelector('[data-role="open-inst"]');
   const clearBtn = win.bodyEl.querySelector('[data-role="clear-notes"]');
 
-  nameInput.addEventListener("input", () => {
-    clip.name = nameInput.value;
-    wm.setWindowTitle(winId, `${isLoopMode ? "피아노 롤 (패턴 루프)" : "피아노롤"} · ${track.name} — ${clip.name || "Clip"}`);
-    persistLocal();
-    arrangementView.draw();
-  });
+  if (nameInput) {
+    nameInput.addEventListener("input", () => {
+      clip.name = nameInput.value;
+      wm.setWindowTitle(winId, `${isLoopMode ? "피아노 롤 (패턴 루프)" : "피아노롤"} · ${track.name} — ${clip.name || "Clip"}`);
+      persistLocal();
+      arrangementView.draw();
+    });
+  }
 
-  snapSelect.addEventListener("change", () => {
-    const opt = SNAP_OPTIONS.find((o) => o.value === snapSelect.value);
-    prView.setSnap(opt ? opt.step : 0.5);
-  });
+  if (snapSelect) {
+    snapSelect.addEventListener("change", () => {
+      const opt = SNAP_OPTIONS.find((o) => o.value === snapSelect.value);
+      prView.setSnap(opt ? opt.step : 0.5);
+    });
+  }
 
-  drawBtn.addEventListener("click", () => {
-    prView.setTool("draw");
-    drawBtn.classList.add("active");
-    sliceBtn.classList.remove("active");
-    if (selectBtn) selectBtn.classList.remove("active");
-  });
+  if (drawBtn) {
+    drawBtn.addEventListener("click", () => {
+      prView.setTool("draw");
+      drawBtn.classList.add("active");
+      if (sliceBtn) sliceBtn.classList.remove("active");
+      if (selectBtn) selectBtn.classList.remove("active");
+    });
+  }
 
-  sliceBtn.addEventListener("click", () => {
-    prView.setTool("slice");
-    sliceBtn.classList.add("active");
-    drawBtn.classList.remove("active");
-    if (selectBtn) selectBtn.classList.remove("active");
-  });
+  if (sliceBtn) {
+    sliceBtn.addEventListener("click", () => {
+      prView.setTool("slice");
+      sliceBtn.classList.add("active");
+      if (drawBtn) drawBtn.classList.remove("active");
+      if (selectBtn) selectBtn.classList.remove("active");
+    });
+  }
 
   if (selectBtn) {
     selectBtn.addEventListener("click", () => {
       prView.setTool("select");
       selectBtn.classList.add("active");
-      drawBtn.classList.remove("active");
-      sliceBtn.classList.remove("active");
+      if (drawBtn) drawBtn.classList.remove("active");
+      if (sliceBtn) sliceBtn.classList.remove("active");
     });
   }
 
@@ -1615,14 +1623,16 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     });
   }
 
-  splitHalfBtn.addEventListener("click", () => {
-    const cnt = prView.splitSelectedOrAllInHalf();
-    if (cnt > 0) showToast(`${cnt}개 노트를 반박으로 분할했습니다.`);
-    else showToast("분할할 노트가 없거나 이미 최소 길이입니다.");
-  });
+  if (splitHalfBtn) {
+    splitHalfBtn.addEventListener("click", () => {
+      const cnt = prView.splitSelectedOrAllInHalf();
+      if (cnt > 0) showToast(`${cnt}개 노트를 반박으로 분할했습니다.`);
+      else showToast("분할할 노트가 없거나 이미 최소 길이입니다.");
+    });
+  }
 
-  zoomOutBtn.addEventListener("click", () => prView.setZoom(prView.zoom * 0.8));
-  zoomInBtn.addEventListener("click", () => prView.setZoom(prView.zoom * 1.25));
+  if (zoomOutBtn) zoomOutBtn.addEventListener("click", () => prView.setZoom(prView.zoom * 0.8));
+  if (zoomInBtn) zoomInBtn.addEventListener("click", () => prView.setZoom(prView.zoom * 1.25));
 
   if (patBarsSelect) {
     patBarsSelect.addEventListener("change", () => {
@@ -1654,28 +1664,36 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     });
   }
 
-  scaleSelect.addEventListener("change", () => {
-    project.scale = scaleSelect.value;
-    persistLocal();
-    for (const pr of openPianoRolls.values()) pr.view.draw();
-  });
+  if (scaleSelect) {
+    scaleSelect.addEventListener("change", () => {
+      project.scale = scaleSelect.value;
+      persistLocal();
+      for (const pr of openPianoRolls.values()) pr.view.draw();
+    });
+  }
 
-  openInstBtn.addEventListener("click", () => openInstrumentWindow(track.id));
+  if (openInstBtn) openInstBtn.addEventListener("click", () => openInstrumentWindow(track.id));
 
-  clearBtn.addEventListener("click", () => {
-    clip.notes = [];
-    persistLocal();
-    prView.draw();
-    arrangementView.draw();
-  });
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      clip.notes = [];
+      persistLocal();
+      prView.draw();
+      arrangementView.draw();
+    });
+  }
 
   syncLoopButtons();
   requestAnimationFrame(() => {
-    prView.resizeAndDraw();
-    if (centerMidi != null) {
-      prView.scrollToMidi(centerMidi);
-    } else {
-      prView.scrollToCenterOctave();
+    try {
+      prView.resizeAndDraw();
+      if (centerMidi != null) {
+        prView.scrollToMidi(centerMidi);
+      } else {
+        prView.scrollToCenterOctave();
+      }
+    } catch (err) {
+      console.error("Error initializing piano roll window:", err);
     }
   });
 }

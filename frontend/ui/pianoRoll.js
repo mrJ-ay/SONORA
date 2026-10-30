@@ -851,6 +851,7 @@ export class PianoRollView {
       const nw = Math.max(4, n.length * stepWidth - 1);
       const nh = ROW_HEIGHT - 3;
       const isSelected = this.selectedNoteIds.has(n.id);
+      const vel = Math.max(0.15, Math.min(1, n.velocity ?? 0.84));
 
       ctx.save();
       ctx.globalAlpha = 0.45 + vel * 0.55;
@@ -1011,6 +1012,8 @@ export class PianoRollView {
     ctx.fillRect(scrollLeft, 0, KEY_WIDTH, HEADER_HEIGHT);
     ctx.fillStyle = this.snapStep === 0 ? "#ffd166" : "#54a0ff";
     ctx.font = "800 9px Pretendard, system-ui, sans-serif";
+    ctx.fillText(this.snapStep === 0 ? "FREE" : "SNAP", scrollLeft + 10, 16);
+
     // Render Marquee Selection Box
     if (this.dragState && this.dragState.mode === "box-select") {
       const { startX, startY, curX, curY } = this.dragState;

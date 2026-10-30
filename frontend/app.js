@@ -479,9 +479,16 @@ function renderTrackHeaders() {
         <button class="trk-action-btn" data-act="importaudio" type="button" title="오디오 파일(.wav/.mp3)을 타임라인에 추가">📂 파일</button>
       `;
     } else if (!isEmpty) {
-      extraBtnsHtml = `
-        <button class="trk-action-btn" data-act="editclip" type="button" title="독립 ${isDrum ? "비트 시퀀서" : "피아노롤"} 창 열기">${isDrum ? "🥁 비트창" : "🎹 피아노롤"}</button>
-      `;
+      if (isDrum) {
+        extraBtnsHtml = `
+          <button class="trk-action-btn" data-act="editclip" type="button" title="독립 비트 시퀀서 창 열기">🥁 비트창</button>
+          <button class="trk-action-btn" data-act="openprloop" type="button" title="이 비트 트랙의 루프 피아노 롤 열기">🎹 롤</button>
+        `;
+      } else {
+        extraBtnsHtml = `
+          <button class="trk-action-btn" data-act="editclip" type="button" title="독립 피아노롤 창 열기">🎹 피아노롤</button>
+        `;
+      }
     }
 
     row.innerHTML = `
@@ -543,6 +550,17 @@ function renderTrackHeaders() {
         }
         selectedClipId = clip.id;
         openClipWindow(trk.id, clip.id);
+      } else if (act === "openprloop") {
+        let clip = (project.clips || []).find((c) => c.trackId === trk.id && c.id === selectedClipId)
+          || (project.clips || []).find((c) => c.trackId === trk.id);
+        if (!clip) {
+          clip = createEmptyClip(trk, 0, 2);
+          project.clips.push(clip);
+          persistLocal();
+          arrangementView.resizeAndDraw();
+        }
+        selectedClipId = clip.id;
+        openPianoRollWindow(trk, clip, true);
       } else if (act === "delete") {
         if (project.tracks.length <= 1) {
           showToast("최소 1개의 트랙은 남겨두어야 합니다.");

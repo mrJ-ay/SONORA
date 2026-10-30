@@ -138,6 +138,51 @@ body {
   color: #08121c;
 }
 
+.transport-btn.rec-btn {
+  color: #ff6b6b;
+  border-color: rgba(255, 107, 107, 0.4);
+}
+.transport-btn.rec-btn:hover {
+  background: rgba(255, 71, 87, 0.2);
+  border-color: #ff4757;
+}
+.transport-btn.rec-btn.recording {
+  background: #ff4757;
+  border-color: #ff6b81;
+  color: #ffffff;
+  box-shadow: 0 0 14px rgba(255, 71, 87, 0.65);
+  animation: recPulse 1.1s infinite;
+}
+
+.transport-btn.midi-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.midi-led {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #475569;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+  transition: all 0.1s ease;
+}
+.midi-led.connected {
+  background: #1dd1a1;
+  box-shadow: 0 0 8px rgba(29, 209, 161, 0.7);
+}
+.midi-led.active {
+  background: #feca57 !important;
+  box-shadow: 0 0 12px #feca57 !important;
+  transform: scale(1.35);
+}
+.midi-led.large {
+  width: 12px;
+  height: 12px;
+}
+
 .lcd-box {
   background: #070a0f;
   border: 1px solid #222c3f;
@@ -1567,5 +1612,105 @@ body {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
+}
+
+/* MIDI DEVICE MODAL STYLES */
+.midi-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 10px 0;
+}
+.midi-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #0d121c;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+.midi-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.midi-device-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: #141a27;
+  border: 1px solid #25334c;
+  border-radius: 8px;
+}
+.midi-device-item.active {
+  border-color: #1dd1a1;
+}
+.midi-device-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.midi-device-meta strong {
+  font-size: 0.85rem;
+  color: #f1f5f9;
+}
+.midi-device-meta span {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+.midi-badge-connected {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  background: rgba(29, 209, 161, 0.15);
+  color: #1dd1a1;
+  border: 1px solid rgba(29, 209, 161, 0.4);
+}
+.midi-live-monitor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #0b0f17;
+  border: 1px dashed #334155;
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+}
+.midi-live-monitor .monitor-title {
+  color: #64748b;
+  font-weight: 600;
+}
+.midi-live-monitor .monitor-value {
+  color: #38bdf8;
+  font-weight: 700;
+}
+.midi-guide-box {
+  background: #131926;
+  border: 1px solid #202b3f;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+.midi-guide-box p {
+  margin: 0 0 6px 0;
+  color: #f59e0b;
+}
+.midi-guide-box ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+.midi-guide-box li {
+  margin-bottom: 4px;
 }
 

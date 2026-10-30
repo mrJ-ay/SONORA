@@ -22,6 +22,7 @@ import {
 import { PianoRollView, SNAP_OPTIONS } from "./ui/pianoRoll.js";
 import { ArrangementView } from "./ui/arrangement.js";
 import { WindowManager } from "./ui/windowManager.js";
+import { WebMidiManager } from "./audio/midiManager.js";
 
 const TOKEN_KEY = "sonora_oneid_token";
 const LOCAL_AUTOSAVE_KEY = "sonora_autosave_v4";
@@ -47,10 +48,15 @@ const recorder = new AudioRecorderManager();
 const projectTitleInput = document.querySelector("#projectTitleInput");
 const playBtn = document.querySelector("#playBtn");
 const stopBtn = document.querySelector("#stopBtn");
+const globalRecBtn = document.querySelector("#globalRecBtn");
 const lcdTime = document.querySelector("#lcdTime");
 const bpmInput = document.querySelector("#bpmInput");
 const swingInput = document.querySelector("#swingInput");
 const metroBtn = document.querySelector("#metroBtn");
+const midiStatusBtn = document.querySelector("#midiStatusBtn");
+const midiLed = document.querySelector("#midiLed");
+const midiModal = document.querySelector("#midiModal");
+const midiRescanBtn = document.querySelector("#midiRescanBtn");
 const spectrumCanvas = document.querySelector("#spectrumCanvas");
 const layoutPresetSelect = document.querySelector("#layoutPresetSelect");
 const demoSelect = document.querySelector("#demoSelect");
@@ -372,11 +378,22 @@ function createAudioTimelineClip(trk, sampleRes, preferredStartBar = null) {
   return clip;
 }
 
+let midiRecordingState = null; // { trackId, clip, startBar, activeNotes: Map }
+
+function updateTransportRecBtn() {
+  if (globalRecBtn) {
+    const isRec = Boolean(recorder.isRecording || midiRecordingState);
+    globalRecBtn.classList.toggle("recording", isRec);
+    globalRecBtn.textContent = isRec ? "■ REC" : "● REC";
+  }
+}
+
 async function finishLiveRecording() {
   if (!recorder.isRecording) return null;
   engine.isRecording = false;
   arrangementView.liveRecording = null;
   engine.stop(false);
+  updateTransportRecBtn();
 
   try {
     const res = await recorder.stopRecording(engine.ctx);
@@ -404,6 +421,7 @@ async function toggleLiveRecordOnTrack(trk, customStartBar = null) {
     await finishLiveRecording();
     if (wasSameTrack) return;
   }
+  if (midiRecordingState) finishMidiRecording();
 
   try {
     engine.ensureContext();
@@ -433,14 +451,93 @@ async function toggleLiveRecordOnTrack(trk, customStartBar = null) {
     if (!engine.isPlaying) engine.start();
 
     renderTrackHeaders();
+    updateTransportRecBtn();
     const iw = openInstWins.get(trk.id);
     if (iw) iw.renderContent();
     showToast(`🔴 '${trk.name}' 실시간 녹음 시작! (정지 버튼을 누르면 클립으로 저장됩니다)`);
   } catch (err) {
     engine.isRecording = false;
     arrangementView.liveRecording = null;
+    updateTransportRecBtn();
     showToast(err?.message || "마이크/오디오 입력 권한을 허용해 주세요.");
   }
+}
+
+async function startMidiRecordingOnTrack(trk, customStartBar = null) {
+  if (!trk) return;
+  engine.ensureContext();
+  if (recorder.isRecording) await finishLiveRecording();
+  if (midiRecordingState) finishMidiRecording();
+
+  const startBar = customStartBar !== null && customStartBar !== undefined
+    ? Math.max(0, Math.round(customStartBar * 4) / 4)
+    : Math.max(0, Math.round((engine.currentGlobalStep / 16) * 4) / 4);
+
+  let clip = (project.clips || []).find((c) => c.trackId === trk.id && c.id === selectedClipId)
+    || (project.clips || []).find((c) => c.trackId === trk.id && Math.abs((c.bar || 0) - startBar) < 0.5);
+
+  if (!clip) {
+    const takeCount = (project.clips || []).filter((c) => c.trackId === trk.id).length + 1;
+    clip = createEmptyClip(trk, startBar, 4);
+    clip.name = `${trk.name} Rec ${takeCount}`;
+    project.clips.push(clip);
+  }
+  selectedClipId = clip.id;
+  if (!Array.isArray(clip.notes)) clip.notes = [];
+
+  midiRecordingState = {
+    trackId: trk.id,
+    clip,
+    startBar,
+    activeNotes: new Map(),
+  };
+
+  engine.loopClipId = null;
+  syncLoopButtons();
+  engine.isRecording = true;
+  arrangementView.liveRecording = { trackId: trk.id, startBar };
+  engine.seekToBar(startBar);
+  if (!engine.isPlaying) engine.start();
+
+  renderTrackHeaders();
+  updateTransportRecBtn();
+  arrangementView.draw();
+  for (const pr of openPianoRolls.values()) {
+    if (pr.trackId === trk.id) pr.view.draw();
+  }
+  showToast(`🔴 '${trk.name}' MIDI 건반 녹음 시작! (마스터 키보드로 연주하세요)`);
+}
+
+function finishMidiRecording() {
+  if (!midiRecordingState) return;
+  const { trackId, clip, activeNotes } = midiRecordingState;
+  const clipStart = (clip.bar || 0) * 16;
+  const currentStep = engine.pollPlayhead();
+
+  for (const [note, rec] of activeNotes.entries()) {
+    const endStep = Math.max(rec.startStep + 0.25, currentStep - clipStart);
+    clip.notes.push({
+      id: `n_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      midi: note,
+      start: Math.round(rec.startStep * 100) / 100,
+      length: Math.round(Math.max(0.25, endStep - rec.startStep) * 100) / 100,
+      velocity: rec.velocity ?? 0.85,
+    });
+  }
+
+  syncMelodicClipLength(clip);
+  midiRecordingState = null;
+  engine.isRecording = false;
+  arrangementView.liveRecording = null;
+  persistLocal();
+  renderTrackHeaders();
+  updateTransportRecBtn();
+  arrangementView.draw();
+  for (const pr of openPianoRolls.values()) {
+    if (pr.trackId === trackId) pr.view.draw();
+  }
+  const trk = (project.tracks || []).find((t) => t.id === trackId);
+  showToast(`🔴 '${trk?.name || "트랙"}' 건반 녹음 완료! (${clip.notes.length}개 노트)`);
 }
 
 // TRACK HEADERS (LEFT SIDE OF ARRANGEMENT)
@@ -456,7 +553,9 @@ function renderTrackHeaders() {
     const isEmpty = trk.type === "empty" || trk.engine === "none";
     const isAudio = trk.type === "audio";
     const isDrum = trk.type === "drumkit";
-    const isRecHere = recorder.isRecording && recorder.recordingMeta?.trackId === trk.id;
+    const isMidiRecHere = midiRecordingState && midiRecordingState.trackId === trk.id;
+    const isAudioRecHere = recorder.isRecording && recorder.recordingMeta?.trackId === trk.id;
+    const isRecHere = isAudioRecHere || isMidiRecHere;
 
     const tagText = isEmpty
       ? "비어있음"
@@ -481,11 +580,13 @@ function renderTrackHeaders() {
     } else if (!isEmpty) {
       if (isDrum) {
         extraBtnsHtml = `
+          <button class="trk-rec-btn ${isRecHere ? "recording" : ""}" data-act="midirec" type="button" title="외장 MIDI 건반/패드로 실시간 비트/노트 녹음">${isRecHere ? "■ 정지" : "● 녹음"}</button>
           <button class="trk-action-btn" data-act="editclip" type="button" title="독립 비트 시퀀서 창 열기">🥁 비트창</button>
           <button class="trk-action-btn" data-act="openprloop" type="button" title="이 비트 트랙의 루프 피아노 롤 열기">🎹 롤</button>
         `;
       } else {
         extraBtnsHtml = `
+          <button class="trk-rec-btn ${isRecHere ? "recording" : ""}" data-act="midirec" type="button" title="외장 MIDI 마스터 키보드로 실시간 멜로디 녹음">${isRecHere ? "■ 정지" : "● 녹음"}</button>
           <button class="trk-action-btn" data-act="editclip" type="button" title="독립 피아노롤 창 열기">🎹 피아노롤</button>
         `;
       }
@@ -535,6 +636,15 @@ function renderTrackHeaders() {
         openInstrumentWindow(trk.id);
       } else if (act === "rec") {
         await toggleLiveRecordOnTrack(trk);
+      } else if (act === "midirec") {
+        if (midiRecordingState && midiRecordingState.trackId === trk.id) {
+          finishMidiRecording();
+          engine.stop(false);
+        } else {
+          if (midiRecordingState) finishMidiRecording();
+          if (recorder.isRecording) await finishLiveRecording();
+          startMidiRecordingOnTrack(trk);
+        }
       } else if (act === "importaudio") {
         pendingFileAction = { mode: "audio_clip", trackId: trk.id, bar: null };
         externalInstFileInput.value = "";
@@ -2745,6 +2855,11 @@ function animationFrame() {
 
 // TRANSPORT & TOP BAR CONTROLS
 playBtn.addEventListener("click", async () => {
+  if (midiRecordingState) {
+    finishMidiRecording();
+    engine.stop(false);
+    return;
+  }
   if (recorder.isRecording) {
     await finishLiveRecording();
     return;
@@ -2759,6 +2874,11 @@ playBtn.addEventListener("click", async () => {
 });
 
 stopBtn.addEventListener("click", async () => {
+  if (midiRecordingState) {
+    finishMidiRecording();
+    engine.stop(true);
+    return;
+  }
   if (recorder.isRecording) {
     await finishLiveRecording();
     engine.stop(true);
@@ -2769,10 +2889,41 @@ stopBtn.addEventListener("click", async () => {
   engine.stop(true);
 });
 
+if (globalRecBtn) {
+  globalRecBtn.addEventListener("click", async () => {
+    if (midiRecordingState) {
+      finishMidiRecording();
+      engine.stop(false);
+      return;
+    }
+    if (recorder.isRecording) {
+      await finishLiveRecording();
+      return;
+    }
+    const trk = (project.tracks || []).find((t) => t.id === project.selectedTrackId)
+      || (project.tracks || []).find((t) => t.type !== "empty")
+      || project.tracks[0];
+    if (!trk || trk.type === "empty") {
+      showToast("녹음할 트랙을 먼저 선택해주세요.");
+      return;
+    }
+    if (trk.type === "audio") {
+      await toggleLiveRecordOnTrack(trk);
+    } else {
+      startMidiRecordingOnTrack(trk);
+    }
+  });
+}
+
 window.addEventListener("keydown", async (e) => {
   if (e.target.matches("input, textarea, select")) return;
   if (e.code === "Space") {
     e.preventDefault();
+    if (midiRecordingState) {
+      finishMidiRecording();
+      engine.stop(false);
+      return;
+    }
     if (recorder.isRecording) {
       await finishLiveRecording();
       return;
@@ -3113,8 +3264,185 @@ function renderAll() {
   arrangementView.resizeAndDraw();
 }
 
+// ==========================================
+// WEB MIDI HARDWARE MANAGER & REAL-TIME INPUT
+// ==========================================
+function updateMidiUi(devices = []) {
+  const isConnected = devices.length > 0;
+  if (midiLed) {
+    midiLed.classList.toggle("connected", isConnected);
+    midiLed.title = isConnected
+      ? `연결된 MIDI 장치 (${devices.length}개): ${devices.map((d) => d.name).join(", ")}`
+      : "연결된 MIDI 장치 없음";
+  }
+  const modalLed = document.querySelector("#midiModalLed");
+  if (modalLed) {
+    modalLed.classList.toggle("connected", isConnected);
+  }
+  const statusSummary = document.querySelector("#midiStatusSummary");
+  if (statusSummary) {
+    statusSummary.textContent = isConnected
+      ? `✅ ${devices.length}개의 MIDI 마스터 키보드 / 건반이 연결되었습니다.`
+      : "현재 인식된 외장 MIDI 장치가 없습니다. USB 케이블을 컴퓨터에 연결하세요.";
+  }
+  const deviceList = document.querySelector("#midiDeviceList");
+  if (deviceList) {
+    if (devices.length === 0) {
+      deviceList.innerHTML = `
+        <div style="padding:16px;text-align:center;color:var(--muted);font-size:0.8rem;background:#101521;border-radius:6px;">
+          인식된 USB MIDI 장치가 없습니다.<br>
+          마스터 키보드 또는 신디사이저의 USB를 컴퓨터에 연결해주세요.
+        </div>
+      `;
+    } else {
+      deviceList.innerHTML = devices
+        .map(
+          (d) => `
+          <div class="midi-device-item active">
+            <div class="midi-device-meta">
+              <strong>🎹 ${escapeHtml(d.name)}</strong>
+              <span>제조사: ${escapeHtml(d.manufacturer || "Generic")} · 상태: 정상 연결됨</span>
+            </div>
+            <span class="midi-badge-connected">입력 활성</span>
+          </div>
+        `
+        )
+        .join("");
+    }
+  }
+}
+
+const midiManager = new WebMidiManager({
+  onNoteOn: ({ note, velocity, channel, deviceName }) => {
+    if (midiLed) {
+      midiLed.classList.add("active");
+      clearTimeout(midiLed._t);
+      midiLed._t = setTimeout(() => midiLed.classList.remove("active"), 130);
+    }
+    const modalLed = document.querySelector("#midiModalLed");
+    if (modalLed) {
+      modalLed.classList.add("active");
+      clearTimeout(modalLed._t);
+      modalLed._t = setTimeout(() => modalLed.classList.remove("active"), 130);
+    }
+    const monitorLog = document.querySelector("#midiMonitorLog");
+    if (monitorLog) {
+      monitorLog.textContent = `Note ON: ${midiToName(note)} (${note}) | Vel: ${Math.round(velocity * 127)} | Ch: ${channel} (${deviceName})`;
+    }
+
+    const trk = (project.tracks || []).find((t) => t.id === project.selectedTrackId)
+      || (project.tracks || []).find((t) => t.type !== "empty" && t.type !== "audio")
+      || project.tracks[0];
+    if (!trk || trk.type === "empty" || trk.type === "audio") return;
+
+    engine.ensureContext();
+    engine.previewTrackNote(trk, note, 0.45, velocity);
+
+    // Audition sticky keys on open Piano Roll windows
+    for (const pr of openPianoRolls.values()) {
+      if (pr.trackId === trk.id) {
+        pr.view.dragState = { mode: "key", lastAuditionMidi: note };
+        pr.view.draw();
+        setTimeout(() => {
+          if (pr.view.dragState?.mode === "key" && pr.view.dragState.lastAuditionMidi === note) {
+            pr.view.dragState = null;
+            pr.view.draw();
+          }
+        }, 160);
+      }
+    }
+
+    // Real-time MIDI Recording: capture note down
+    if (midiRecordingState && midiRecordingState.trackId === trk.id) {
+      const clip = midiRecordingState.clip;
+      if (clip) {
+        const clipStart = (clip.bar || 0) * 16;
+        const currentStep = engine.isPlaying ? engine.pollPlayhead() : 0;
+        const localStep = Math.max(0, currentStep - clipStart);
+        midiRecordingState.activeNotes.set(note, {
+          startStep: localStep,
+          velocity,
+        });
+      }
+    }
+  },
+
+  onNoteOff: ({ note, channel }) => {
+    const monitorLog = document.querySelector("#midiMonitorLog");
+    if (monitorLog && (!midiRecordingState || !midiRecordingState.activeNotes.size)) {
+      monitorLog.textContent = `Note OFF: ${midiToName(note)} (${note}) | Ch: ${channel}`;
+    }
+
+    // Real-time MIDI Recording: capture note up and commit note to clip
+    if (midiRecordingState) {
+      const rec = midiRecordingState.activeNotes.get(note);
+      if (rec) {
+        midiRecordingState.activeNotes.delete(note);
+        const clip = midiRecordingState.clip;
+        if (clip) {
+          const clipStart = (clip.bar || 0) * 16;
+          const currentStep = engine.isPlaying ? engine.pollPlayhead() : 0;
+          const endStep = Math.max(rec.startStep + 0.25, currentStep - clipStart);
+          const len = Math.max(0.25, endStep - rec.startStep);
+          if (!Array.isArray(clip.notes)) clip.notes = [];
+          clip.notes.push({
+            id: `n_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            midi: note,
+            start: Math.round(rec.startStep * 100) / 100,
+            length: Math.round(len * 100) / 100,
+            velocity: rec.velocity ?? 0.85,
+          });
+          syncMelodicClipLength(clip);
+          persistLocal();
+          for (const pr of openPianoRolls.values()) {
+            if (pr.trackId === midiRecordingState.trackId) pr.view.requestDraw();
+          }
+          arrangementView.requestDraw();
+        }
+      }
+    }
+  },
+
+  onDeviceStateChange: ({ devices, action, countChanged, port }) => {
+    updateMidiUi(devices);
+    if (countChanged) {
+      if (action === "connected" && port?.name) {
+        showToast(`🎹 '${port.name}' 미디 건반이 연결되었습니다!`);
+      } else if (action === "disconnected") {
+        showToast("🎹 미디 건반 연결이 해제되었습니다.");
+      }
+    }
+  },
+});
+
+if (midiStatusBtn) {
+  midiStatusBtn.addEventListener("click", () => {
+    if (midiModal) midiModal.hidden = false;
+    midiManager.init().then((res) => {
+      updateMidiUi(res.devices || midiManager.getDeviceList());
+    });
+  });
+}
+
+if (midiRescanBtn) {
+  midiRescanBtn.addEventListener("click", async () => {
+    const res = await midiManager.init();
+    updateMidiUi(res.devices || midiManager.getDeviceList());
+    showToast(
+      res.devices?.length > 0
+        ? `🎹 ${res.devices.length}개의 MIDI 장치를 찾았습니다!`
+        : "인식된 MIDI 장치가 없습니다. USB 케이블 연결을 확인해주세요."
+    );
+  });
+}
+
 // INIT MULTI-WINDOW WORKSPACE
 (async function init() {
+  midiManager.init().then((res) => {
+    if (res.success && res.devices?.length > 0) {
+      updateMidiUi(res.devices);
+    }
+  });
   // Register Core Draggable/Resizable Windows: Arrangement + Console Mixer
   wm.createWindow({
     id: "win-arrangement",

@@ -20,6 +20,7 @@
     <div class="transport-controls">
       <button id="playBtn" class="transport-btn play" type="button" title="전체 곡 재생 / 정지 (Space)">▶ PLAY</button>
       <button id="stopBtn" class="transport-btn stop" type="button" title="정지 및 처음으로">■</button>
+      <button id="globalRecBtn" class="transport-btn rec-btn" type="button" title="선택된 트랙(MIDI 건반 또는 오디오) 실시간 녹음">● REC</button>
       <div class="lcd-box" title="마디 : 박 : 16분스텝">
         <span class="lcd-label">BAR : BEAT : STEP</span>
         <strong id="lcdTime" class="lcd-digits">01 : 01 : 01</strong>
@@ -33,6 +34,7 @@
         <input id="swingInput" type="number" min="0" max="60" value="0">
       </label>
       <button id="metroBtn" class="transport-btn metro" type="button" title="메트로놈 클릭">⏱ CLICK</button>
+      <button id="midiStatusBtn" class="transport-btn midi-btn" type="button" title="USB MIDI 키보드 / 건반 장치 연결 및 상태">🎹 MIDI <span class="midi-led" id="midiLed"></span></button>
       <canvas id="spectrumCanvas" class="spectrum-canvas" width="96" height="28"></canvas>
     </div>
 
@@ -148,6 +150,39 @@
       </div>
       <div id="cloudStatusMsg" class="cloud-msg"></div>
       <div id="cloudList" class="cloud-list"></div>
+    </div>
+  </div>
+
+  <!-- MIDI HARDWARE DEVICE STATUS MODAL -->
+  <div id="midiModal" class="modal-backdrop" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>🎹 MIDI 마스터 키보드 / 외장 건반 연결</h3>
+        <button class="modal-close" data-close="midiModal" type="button">✕</button>
+      </div>
+      <div class="midi-modal-body">
+        <div class="midi-status-banner" id="midiStatusBanner">
+          <span class="midi-led large" id="midiModalLed"></span>
+          <span id="midiStatusSummary">연결된 MIDI 장치 확인 중...</span>
+        </div>
+        <div class="midi-device-list" id="midiDeviceList"></div>
+        <div class="midi-live-monitor" id="midiLiveMonitor">
+          <span class="monitor-title">실시간 신호:</span>
+          <span class="monitor-value" id="midiMonitorLog">건반을 누르면 신호가 표시됩니다.</span>
+        </div>
+        <div class="midi-guide-box">
+          <p>💡 <b>사용 방법</b></p>
+          <ul>
+            <li>컴퓨터 USB 포트에 미디 건반을 연결하면 브라우저에서 자동으로 즉시 인식됩니다.</li>
+            <li>왼쪽 트랙 목록에서 연주하고 싶은 <b>신스, 사운드폰트(SF2), 808, 드럼 트랙</b>을 클릭하세요.</li>
+            <li>상단의 <b>[● REC]</b> 또는 트랙의 <b>[● 녹음]</b> 버튼을 누르면 건반 연주가 피아노 롤과 타임라인에 실시간으로 녹음됩니다!</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button id="midiRescanBtn" class="studio-btn" type="button">🔄 장치 다시 검색</button>
+        <button class="studio-btn primary" data-close="midiModal" type="button">확인</button>
+      </div>
     </div>
   </div>
 

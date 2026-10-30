@@ -74,12 +74,15 @@
           <span class="win-title-text">전체 편집기 · ARRANGEMENT</span>
           <div class="win-header-extra">
             <button id="addTrackBtn" class="add-track-btn plain" type="button" title="일반 빈 트랙 추가 (추가 후 트랙 슬롯에서 오디오 녹음 / 드럼 / 신스 / 외부악기 선택)">＋ 트랙 추가</button>
+            <button id="arrCopyBtn" class="mini-btn" type="button" title="선택된 클립 복사 (Ctrl+C)">📋 복사</button>
+            <button id="arrPasteBtn" class="mini-btn" type="button" title="복사한 클립 붙여넣기 (Ctrl+V)">📥 붙여넣기</button>
+            <button id="arrDupBtn" class="mini-btn" type="button" title="선택된 클립 바로 뒤에 복제 (Ctrl+D)">⚡ 복제</button>
             <button id="zoomOutArrangementBtn" class="mini-btn" type="button" title="타임라인 축소 (Ctrl+휠)">🔍−</button>
             <button id="zoomInArrangementBtn" class="mini-btn" type="button" title="타임라인 확대 (Ctrl+휠)">🔍＋</button>
           </div>
         </div>
         <div class="win-controls">
-          <span class="win-hint-inline">Shift+휠: 가로 무제한 스크롤 · Ctrl+휠: 마디 줌 · 빈 마디 클릭: 클립 생성</span>
+          <span class="win-hint-inline">Ctrl+C/V/D: 클립 복사·붙여넣기·복제 · Del: 삭제 · Shift+휠: 가로 스크롤</span>
           <button type="button" class="win-ctrl-btn" data-win-act="min" title="최소화">─</button>
           <button type="button" class="win-ctrl-btn" data-win-act="max" title="최대화 / 복원">□</button>
         </div>

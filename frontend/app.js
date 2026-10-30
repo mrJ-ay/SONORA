@@ -232,6 +232,103 @@ const zoomInArrBtn = document.getElementById("zoomInArrangementBtn");
 if (zoomOutArrBtn) zoomOutArrBtn.addEventListener("click", () => arrangementView.zoomOut());
 if (zoomInArrBtn) zoomInArrBtn.addEventListener("click", () => arrangementView.zoomIn());
 
+let clipClipboard = null;
+
+function copySelectedClip() {
+  if (!selectedClipId) {
+    showToast("복사할 클립을 먼저 클릭하여 선택해주세요.");
+    return false;
+  }
+  const clip = (project.clips || []).find((c) => c.id === selectedClipId);
+  if (!clip) return false;
+  clipClipboard = JSON.parse(JSON.stringify(clip));
+  showToast(`📋 '${clip.name || "Clip"}' 클립을 복사했습니다.`);
+  return true;
+}
+
+function cutSelectedClip() {
+  if (!selectedClipId) return false;
+  const clip = (project.clips || []).find((c) => c.id === selectedClipId);
+  if (!clip) return false;
+  copySelectedClip();
+  const idx = (project.clips || []).indexOf(clip);
+  if (idx >= 0) project.clips.splice(idx, 1);
+  cleanupOrphanClipWindows();
+  selectedClipId = null;
+  persistLocal();
+  arrangementView.draw();
+  showToast("✂️ 클립을 잘라냈습니다.");
+  return true;
+}
+
+function pasteClip(targetBar = null, targetTrackId = null) {
+  if (!clipClipboard) {
+    showToast("클립보드가 비어있습니다. 클립을 먼저 복사(Ctrl+C)해주세요.");
+    return false;
+  }
+  const newClip = JSON.parse(JSON.stringify(clipClipboard));
+  newClip.id = `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  newClip.trackId = targetTrackId || project.selectedTrackId || clipClipboard.trackId;
+  const targetStart = targetBar != null ? targetBar : Math.floor(engine.currentGlobalStep / 16);
+  newClip.bar = Math.max(0, targetStart);
+  if (Array.isArray(newClip.notes)) {
+    for (const n of newClip.notes) {
+      n.id = `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    }
+  }
+  if (!project.clips) project.clips = [];
+  project.clips.push(newClip);
+  selectedClipId = newClip.id;
+  persistLocal();
+  arrangementView.resizeAndDraw();
+  showToast(`📋 '${newClip.name || "Clip"}' 클립을 붙여넣었습니다.`);
+  return true;
+}
+
+function duplicateSelectedClip() {
+  if (!selectedClipId) {
+    showToast("복제할 클립을 먼저 클릭하여 선택해주세요.");
+    return false;
+  }
+  const clip = (project.clips || []).find((c) => c.id === selectedClipId);
+  if (!clip) return false;
+  const newClip = JSON.parse(JSON.stringify(clip));
+  newClip.id = `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  newClip.bar = Math.max(0, (clip.bar || 0) + (clip.lengthBars || 1));
+  if (Array.isArray(newClip.notes)) {
+    for (const n of newClip.notes) {
+      n.id = `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    }
+  }
+  project.clips.push(newClip);
+  selectedClipId = newClip.id;
+  persistLocal();
+  arrangementView.resizeAndDraw();
+  showToast(`⚡ '${newClip.name || "Clip"}' 클립을 복제했습니다.`);
+  return true;
+}
+
+function deleteSelectedClip() {
+  if (!selectedClipId) return false;
+  const clip = (project.clips || []).find((c) => c.id === selectedClipId);
+  if (!clip) return false;
+  const idx = (project.clips || []).indexOf(clip);
+  if (idx >= 0) project.clips.splice(idx, 1);
+  cleanupOrphanClipWindows();
+  selectedClipId = null;
+  persistLocal();
+  arrangementView.draw();
+  showToast(`🗑️ '${clip.name || "Clip"}' 클립을 삭제했습니다.`);
+  return true;
+}
+
+const arrCopyBtn = document.getElementById("arrCopyBtn");
+const arrPasteBtn = document.getElementById("arrPasteBtn");
+const arrDupBtn = document.getElementById("arrDupBtn");
+if (arrCopyBtn) arrCopyBtn.addEventListener("click", () => copySelectedClip());
+if (arrPasteBtn) arrPasteBtn.addEventListener("click", () => pasteClip());
+if (arrDupBtn) arrDupBtn.addEventListener("click", () => duplicateSelectedClip());
+
 function syncLoopButtons() {
   for (const bs of openBeatSeqs.values()) {
     if (typeof bs.syncTransport === "function") bs.syncTransport();
@@ -1293,7 +1390,12 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
         </label>
         <button class="mini-btn active" data-role="tool-draw" type="button" title="그리기 / 이동 / 좌우 끝 길이 조절">✏️ 연필</button>
         <button class="mini-btn" data-role="tool-slice" type="button" title="클릭한 위치에서 노트 쪼개기 (Ctrl+클릭도 가능)">✂️ 칼 쪼개기</button>
+        <button class="mini-btn" data-role="tool-select" type="button" title="드래그하여 여러 노트 한 번에 영역 선택 (Shift+드래그도 가능)">◻️ 영역선택</button>
         <button class="mini-btn" data-role="split-half" type="button" title="선택된 노트(또는 전체 노트)를 정확히 반박으로 2등분">÷2 반박 분할</button>
+        <button class="mini-btn" data-role="copy-notes" type="button" title="선택된 노트 복사 (Ctrl+C)">📋 복사</button>
+        <button class="mini-btn" data-role="paste-notes" type="button" title="복사한 노트 붙여넣기 (Ctrl+V)">📥 붙여넣기</button>
+        <button class="mini-btn" data-role="dup-notes" type="button" title="선택된 노트 바로 뒤에 복제 (Ctrl+D)">⚡ 복제</button>
+        <button class="mini-btn" data-role="sel-all" type="button" title="전체 노트 선택 (Ctrl+A)">전체선택</button>
         <div class="pr-label">줌
           <button class="mini-btn" data-role="zoom-out" type="button">−</button>
           <button class="mini-btn" data-role="zoom-in" type="button">＋</button>
@@ -1326,7 +1428,7 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
       <canvas data-role="pr-canvas"></canvas>
     </div>
     <div class="pr-footer-hint">
-      <span>💡 <b>상단 룰러 클릭</b>: 재생 위치 이동 · <b>Shift+휠</b>: 가로 스크롤 · <b>Shift+드래그</b>: 자유 박자 · <b>양끝 드래그</b>: 길이 조절</span>
+      <span>💡 <b>상단 룰러 클릭</b>: 재생 위치 이동 · <b>Ctrl+C/V/D</b>: 복사/붙여넣기/복제 · <b>Shift+드래그</b>: 영역 선택 · <b>Del</b>: 삭제</span>
       <span>${isLoopMode ? "🔁 <b>패턴 루프 모드</b>: 마디 루프 범위 안에서 멜로디 / 808 피치 노트가 반복 재생됩니다." : "노트 위 휠: 벨로시티(강약) · 우클릭: 삭제"}</span>
     </div>
   `;
@@ -1433,7 +1535,12 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
   const snapSelect = win.bodyEl.querySelector('[data-role="snap-select"]');
   const drawBtn = win.bodyEl.querySelector('[data-role="tool-draw"]');
   const sliceBtn = win.bodyEl.querySelector('[data-role="tool-slice"]');
+  const selectBtn = win.bodyEl.querySelector('[data-role="tool-select"]');
   const splitHalfBtn = win.bodyEl.querySelector('[data-role="split-half"]');
+  const copyNotesBtn = win.bodyEl.querySelector('[data-role="copy-notes"]');
+  const pasteNotesBtn = win.bodyEl.querySelector('[data-role="paste-notes"]');
+  const dupNotesBtn = win.bodyEl.querySelector('[data-role="dup-notes"]');
+  const selAllNotesBtn = win.bodyEl.querySelector('[data-role="sel-all"]');
   const zoomOutBtn = win.bodyEl.querySelector('[data-role="zoom-out"]');
   const zoomInBtn = win.bodyEl.querySelector('[data-role="zoom-in"]');
   const patBarsSelect = win.bodyEl.querySelector('[data-role="pattern-bars"]');
@@ -1459,13 +1566,54 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     prView.setTool("draw");
     drawBtn.classList.add("active");
     sliceBtn.classList.remove("active");
+    if (selectBtn) selectBtn.classList.remove("active");
   });
 
   sliceBtn.addEventListener("click", () => {
     prView.setTool("slice");
     sliceBtn.classList.add("active");
     drawBtn.classList.remove("active");
+    if (selectBtn) selectBtn.classList.remove("active");
   });
+
+  if (selectBtn) {
+    selectBtn.addEventListener("click", () => {
+      prView.setTool("select");
+      selectBtn.classList.add("active");
+      drawBtn.classList.remove("active");
+      sliceBtn.classList.remove("active");
+    });
+  }
+
+  if (copyNotesBtn) {
+    copyNotesBtn.addEventListener("click", () => {
+      const cnt = prView.copyNotes();
+      if (cnt) showToast(`📋 ${cnt}개 노트를 복사했습니다.`);
+      else showToast("복사할 노트를 먼저 선택해주세요.");
+    });
+  }
+
+  if (pasteNotesBtn) {
+    pasteNotesBtn.addEventListener("click", () => {
+      const cnt = prView.pasteNotes();
+      if (cnt) showToast(`📥 ${cnt}개 노트를 붙여넣었습니다.`);
+      else showToast("클립보드에 복사된 노트가 없습니다. (Ctrl+C로 먼저 복사)");
+    });
+  }
+
+  if (dupNotesBtn) {
+    dupNotesBtn.addEventListener("click", () => {
+      const cnt = prView.duplicateSelectedOrAll();
+      if (cnt) showToast(`⚡ ${cnt}개 노트를 바로 뒤에 복제했습니다.`);
+    });
+  }
+
+  if (selAllNotesBtn) {
+    selAllNotesBtn.addEventListener("click", () => {
+      const cnt = prView.selectAllNotes();
+      showToast(`전체 ${cnt}개 노트를 선택했습니다.`);
+    });
+  }
 
   splitHalfBtn.addEventListener("click", () => {
     const cnt = prView.splitSelectedOrAllInHalf();
@@ -3062,6 +3210,86 @@ if (globalRecBtn) {
 
 window.addEventListener("keydown", async (e) => {
   if (e.target.matches("input, textarea, select")) return;
+
+  const isCtrl = e.ctrlKey || e.metaKey;
+  const focusedWinId = wm.getFocusedWindowId();
+  const focusedPr = focusedWinId ? [...openPianoRolls.values()].find((pr) => pr.winId === focusedWinId) : null;
+  const focusedBs = focusedWinId ? [...openBeatSeqs.values()].find((bs) => bs.winId === focusedWinId) : null;
+
+  // 1) PIANO ROLL SHORTCUTS (when working inside an open Piano Roll window)
+  if (focusedPr) {
+    if (isCtrl && (e.code === "KeyC" || e.key === "c" || e.key === "C")) {
+      e.preventDefault();
+      const cnt = focusedPr.view.copyNotes();
+      if (cnt) showToast(`📋 ${cnt}개 노트를 복사했습니다.`);
+      else showToast("복사할 노트를 먼저 선택해주세요.");
+      return;
+    }
+    if (isCtrl && (e.code === "KeyX" || e.key === "x" || e.key === "X")) {
+      e.preventDefault();
+      const cnt = focusedPr.view.cutNotes();
+      if (cnt) showToast(`✂️ ${cnt}개 노트를 잘라냈습니다.`);
+      return;
+    }
+    if (isCtrl && (e.code === "KeyV" || e.key === "v" || e.key === "V")) {
+      e.preventDefault();
+      const cnt = focusedPr.view.pasteNotes();
+      if (cnt) showToast(`📥 ${cnt}개 노트를 붙여넣었습니다.`);
+      else showToast("클립보드에 복사된 노트가 없습니다. (Ctrl+C로 먼저 복사)");
+      return;
+    }
+    if (isCtrl && (e.code === "KeyD" || e.key === "d" || e.key === "D")) {
+      e.preventDefault();
+      const cnt = focusedPr.view.duplicateSelectedOrAll();
+      if (cnt) showToast(`⚡ ${cnt}개 노트를 바로 뒤에 복제했습니다.`);
+      return;
+    }
+    if (isCtrl && (e.code === "KeyA" || e.key === "a" || e.key === "A")) {
+      e.preventDefault();
+      const cnt = focusedPr.view.selectAllNotes();
+      showToast(`전체 ${cnt}개 노트를 선택했습니다.`);
+      return;
+    }
+    if (e.code === "Delete" || e.code === "Backspace") {
+      e.preventDefault();
+      const cnt = focusedPr.view.deleteSelectedNotes();
+      if (cnt) showToast(`🗑️ ${cnt}개 노트를 삭제했습니다.`);
+      return;
+    }
+  }
+
+  // 2) ARRANGEMENT SHORTCUTS (when focused on timeline or background)
+  if (!focusedPr && !focusedBs) {
+    if (isCtrl && (e.code === "KeyC" || e.key === "c" || e.key === "C")) {
+      e.preventDefault();
+      copySelectedClip();
+      return;
+    }
+    if (isCtrl && (e.code === "KeyX" || e.key === "x" || e.key === "X")) {
+      e.preventDefault();
+      cutSelectedClip();
+      return;
+    }
+    if (isCtrl && (e.code === "KeyV" || e.key === "v" || e.key === "V")) {
+      e.preventDefault();
+      pasteClip();
+      return;
+    }
+    if (isCtrl && (e.code === "KeyD" || e.key === "d" || e.key === "D")) {
+      e.preventDefault();
+      duplicateSelectedClip();
+      return;
+    }
+    if (e.code === "Delete" || e.code === "Backspace") {
+      if (selectedClipId) {
+        e.preventDefault();
+        deleteSelectedClip();
+        return;
+      }
+    }
+  }
+
+  // 3) SPACEBAR (Play / Pause)
   if (e.code === "Space") {
     e.preventDefault();
     if (midiRecordingState) {
@@ -3074,7 +3302,6 @@ window.addEventListener("keydown", async (e) => {
       return;
     }
 
-    const focusedWinId = wm.getFocusedWindowId();
     if (focusedWinId) {
       for (const [clipId, pr] of openPianoRolls.entries()) {
         if (pr.winId === focusedWinId) {

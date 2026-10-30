@@ -26,6 +26,8 @@ export const SNAP_OPTIONS = [
   { value: "0",      step: 0,        label: "자유 배치 (스냅 OFF)" },
 ];
 
+export let noteClipboard = null;
+
 export class PianoRollView {
   constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote, onSeekStep, isLoopMode = false }) {
     this.canvas = canvas;
@@ -38,10 +40,10 @@ export class PianoRollView {
     this.isLoopMode = Boolean(isLoopMode);
 
     this.snapStep = 0.5; // Default to 1/32 (반박 쪼개기 가능!) right out of the box
-    this.tool = "draw";  // "draw" | "slice"
+    this.tool = "draw";  // "draw" | "slice" | "select"
     this.zoom = 1.25;    // Horizontal zoom multiplier
     this.defaultNoteLen = 1;
-    this.selectedNoteId = null;
+    this.selectedNoteIds = new Set();
     this.dragState = null;
     this.playheadStep = -1;
     this.destroyed = false;
@@ -49,6 +51,15 @@ export class PianoRollView {
     this._onMouseMove = (e) => this.handleMouseMove(e);
     this._onMouseUp = () => this.handleMouseUp();
     this.bindEvents();
+  }
+
+  get selectedNoteId() {
+    return this.selectedNoteIds.values().next().value || null;
+  }
+
+  set selectedNoteId(id) {
+    this.selectedNoteIds.clear();
+    if (id) this.selectedNoteIds.add(id);
   }
 
   destroy() {
@@ -67,8 +78,16 @@ export class PianoRollView {
   }
 
   setTool(toolName) {
-    this.tool = toolName === "slice" ? "slice" : "draw";
-    this.canvas.style.cursor = this.tool === "slice" ? "col-resize" : "crosshair";
+    if (toolName === "slice") {
+      this.tool = "slice";
+      this.canvas.style.cursor = "col-resize";
+    } else if (toolName === "select") {
+      this.tool = "select";
+      this.canvas.style.cursor = "crosshair";
+    } else {
+      this.tool = "draw";
+      this.canvas.style.cursor = "crosshair";
+    }
   }
 
   setZoom(zoomVal) {
@@ -171,14 +190,170 @@ export class PianoRollView {
     return null;
   }
 
+  selectAllNotes() {
+    const ctxData = this.getEditingContext();
+    if (!ctxData?.clip?.notes?.length) return 0;
+    this.selectedNoteIds = new Set(ctxData.clip.notes.map((n) => n.id));
+    this.draw();
+    return this.selectedNoteIds.size;
+  }
+
+  copyNotes() {
+    const ctxData = this.getEditingContext();
+    if (!ctxData?.clip?.notes?.length) return 0;
+    const notes = ctxData.clip.notes;
+    const targets = this.selectedNoteIds.size > 0
+      ? notes.filter((n) => this.selectedNoteIds.has(n.id))
+      : (this.selectedNoteId ? notes.filter((n) => n.id === this.selectedNoteId) : [...notes]);
+
+    if (!targets.length) return 0;
+
+    const minStart = Math.min(...targets.map((n) => n.start));
+    let maxEnd = 0;
+    const items = targets.map((n) => {
+      const end = n.start + n.length;
+      if (end > maxEnd) maxEnd = end;
+      return {
+        deltaStart: Math.round((n.start - minStart) * 10000) / 10000,
+        length: n.length,
+        midi: n.midi,
+        velocity: n.velocity ?? 0.85,
+      };
+    });
+
+    noteClipboard = {
+      items,
+      totalLength: Math.max(0.5, Math.round((maxEnd - minStart) * 10000) / 10000),
+    };
+    return items.length;
+  }
+
+  cutNotes() {
+    const ctxData = this.getEditingContext();
+    if (!ctxData?.clip?.notes?.length) return 0;
+    const count = this.copyNotes();
+    if (!count) return 0;
+
+    const idsToRemove = new Set(this.selectedNoteIds.size > 0 ? this.selectedNoteIds : ctxData.clip.notes.map((n) => n.id));
+    ctxData.clip.notes = ctxData.clip.notes.filter((n) => !idsToRemove.has(n.id));
+    this.selectedNoteIds.clear();
+    this.onNotesChanged();
+    this.draw();
+    return count;
+  }
+
+  pasteNotes(targetStep = null) {
+    if (!noteClipboard || !noteClipboard.items.length) return 0;
+    const ctxData = this.getEditingContext();
+    if (!ctxData?.clip) return 0;
+    const clip = ctxData.clip;
+    if (!clip.notes) clip.notes = [];
+
+    let pasteStart = 0;
+    if (targetStep != null && targetStep >= 0) {
+      pasteStart = targetStep;
+    } else if (this.playheadStep >= 0) {
+      pasteStart = this.quantize(this.playheadStep, false, "floor");
+    } else if (this.selectedNoteIds.size > 0) {
+      let maxEnd = 0;
+      for (const n of clip.notes) {
+        if (this.selectedNoteIds.has(n.id)) {
+          const end = n.start + n.length;
+          if (end > maxEnd) maxEnd = end;
+        }
+      }
+      pasteStart = maxEnd;
+    } else if (clip.notes.length > 0) {
+      let maxEnd = 0;
+      for (const n of clip.notes) {
+        const end = n.start + n.length;
+        if (end > maxEnd) maxEnd = end;
+      }
+      pasteStart = maxEnd;
+    }
+
+    const newSelectedIds = new Set();
+    const createdNotes = [];
+    for (const item of noteClipboard.items) {
+      const n = {
+        id: `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        midi: item.midi,
+        start: Math.max(0, Math.round((pasteStart + item.deltaStart) * 10000) / 10000),
+        length: item.length,
+        velocity: item.velocity ?? 0.85,
+      };
+      clip.notes.push(n);
+      newSelectedIds.add(n.id);
+      createdNotes.push(n);
+    }
+
+    this.selectedNoteIds = newSelectedIds;
+    this.onNotesChanged();
+    this.draw();
+    return createdNotes.length;
+  }
+
+  duplicateSelectedOrAll() {
+    const ctxData = this.getEditingContext();
+    if (!ctxData?.clip?.notes?.length) return 0;
+    const notes = ctxData.clip.notes;
+    const targets = this.selectedNoteIds.size > 0
+      ? notes.filter((n) => this.selectedNoteIds.has(n.id))
+      : [...notes];
+
+    if (!targets.length) return 0;
+
+    let minStart = Infinity;
+    let maxEnd = 0;
+    for (const n of targets) {
+      if (n.start < minStart) minStart = n.start;
+      const end = n.start + n.length;
+      if (end > maxEnd) maxEnd = end;
+    }
+
+    const pasteStart = maxEnd;
+    const newSelectedIds = new Set();
+    const created = [];
+    for (const n of targets) {
+      const delta = n.start - minStart;
+      const newNote = {
+        id: `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        midi: n.midi,
+        start: Math.round((pasteStart + delta) * 10000) / 10000,
+        length: n.length,
+        velocity: n.velocity ?? 0.85,
+      };
+      notes.push(newNote);
+      newSelectedIds.add(newNote.id);
+      created.push(newNote);
+    }
+
+    this.selectedNoteIds = newSelectedIds;
+    this.onNotesChanged();
+    this.draw();
+    return created.length;
+  }
+
+  deleteSelectedNotes() {
+    const ctxData = this.getEditingContext();
+    if (!ctxData?.clip?.notes?.length || this.selectedNoteIds.size === 0) return 0;
+    const notes = ctxData.clip.notes;
+    const count = this.selectedNoteIds.size;
+    ctxData.clip.notes = notes.filter((n) => !this.selectedNoteIds.has(n.id));
+    this.selectedNoteIds.clear();
+    this.onNotesChanged();
+    this.draw();
+    return count;
+  }
+
   // Split selected note (or all notes if none selected) cleanly in half!
   splitSelectedOrAllInHalf() {
     const ctxData = this.getEditingContext();
     if (!ctxData?.clip?.notes?.length) return 0;
     const notes = ctxData.clip.notes;
-    const targets = this.selectedNoteId
-      ? notes.filter((n) => n.id === this.selectedNoteId)
-      : [...notes];
+    const targets = this.selectedNoteIds.size > 0
+      ? notes.filter((n) => this.selectedNoteIds.has(n.id))
+      : (this.selectedNoteId ? notes.filter((n) => n.id === this.selectedNoteId) : [...notes]);
 
     let count = 0;
     for (const n of targets) {
@@ -315,7 +490,7 @@ export class PianoRollView {
         if (hit) {
           const idx = clip.notes.indexOf(hit);
           if (idx >= 0) clip.notes.splice(idx, 1);
-          if (this.selectedNoteId === hit.id) this.selectedNoteId = null;
+          this.selectedNoteIds.delete(hit.id);
           this.onNotesChanged();
           this.draw();
         }
@@ -332,7 +507,16 @@ export class PianoRollView {
       }
 
       if (hit) {
-        this.selectedNoteId = hit.id;
+        if (e.shiftKey) {
+          if (this.selectedNoteIds.has(hit.id)) this.selectedNoteIds.delete(hit.id);
+          else this.selectedNoteIds.add(hit.id);
+        } else {
+          if (!this.selectedNoteIds.has(hit.id)) {
+            this.selectedNoteIds.clear();
+            this.selectedNoteIds.add(hit.id);
+          }
+        }
+
         const noteLeftPx = KEY_WIDTH + hit.start * pos.stepWidth;
         const noteRightPx = KEY_WIDTH + (hit.start + hit.length) * pos.stepWidth;
         const edgeZone = Math.min(9, Math.max(4, (noteRightPx - noteLeftPx) * 0.28));
@@ -347,18 +531,45 @@ export class PianoRollView {
           };
         } else {
           this.onAuditionNote(track, hit.midi, 0.16, hit.velocity ?? 0.84);
-          this.dragState = {
-            mode: "move",
-            note: hit,
-            grabOffsetSteps: pos.rawStep - hit.start,
-            origMidi: hit.midi,
-            startY: pos.y,
-            lastAuditionMidi: hit.midi,
-          };
+          if (this.selectedNoteIds.size > 1 && this.selectedNoteIds.has(hit.id)) {
+            const selNotes = clip.notes.filter((n) => this.selectedNoteIds.has(n.id));
+            this.dragState = {
+              mode: "move-multi",
+              leadNote: hit,
+              origGrabStep: pos.rawStep,
+              origMidi: hit.midi,
+              startY: pos.y,
+              lastAuditionMidi: hit.midi,
+              snapshots: selNotes.map((n) => ({ note: n, origStart: n.start, origMidi: n.midi })),
+            };
+          } else {
+            this.dragState = {
+              mode: "move",
+              note: hit,
+              grabOffsetSteps: pos.rawStep - hit.start,
+              origMidi: hit.midi,
+              startY: pos.y,
+              lastAuditionMidi: hit.midi,
+            };
+          }
         }
         this.draw();
       } else {
         if (this.tool === "slice") return;
+        if (this.tool === "select" || e.shiftKey) {
+          this.dragState = {
+            mode: "box-select",
+            startX: pos.x,
+            startY: pos.y,
+            curX: pos.x,
+            curY: pos.y,
+            shiftKey: e.shiftKey,
+          };
+          this.draw();
+          return;
+        }
+
+        this.selectedNoteIds.clear();
         const startStep = Math.max(0, this.quantize(pos.rawStep, e.shiftKey, "floor"));
         const initLen = Math.max(
           this.minNoteLength(e.shiftKey),
@@ -372,7 +583,7 @@ export class PianoRollView {
           velocity: 0.85,
         };
         clip.notes.push(newNote);
-        this.selectedNoteId = newNote.id;
+        this.selectedNoteIds.add(newNote.id);
         this.onAuditionNote(track, pos.midi, 0.2, 0.85);
         this.onNotesChanged();
         this.dragState = { mode: "create-drag", note: newNote, anchorStep: startStep };
@@ -400,12 +611,46 @@ export class PianoRollView {
       return;
     }
 
+    if (this.dragState.mode === "box-select") {
+      this.dragState.curX = pos.x;
+      this.dragState.curY = pos.y;
+      this.requestDraw();
+      return;
+    }
+
     if (this.dragState.mode === "key") {
       if (pos.midi >= MIN_MIDI && pos.midi <= MAX_MIDI && pos.midi !== this.dragState.lastAuditionMidi) {
         this.dragState.lastAuditionMidi = pos.midi;
         this.onAuditionNote(track, pos.midi, 0.2);
         this.draw();
       }
+      return;
+    }
+
+    if (this.dragState.mode === "move-multi") {
+      const deltaRawSteps = pos.rawStep - this.dragState.origGrabStep;
+      const snappedDelta = this.quantize(deltaRawSteps, e.shiftKey, "round");
+      const dMidi = -Math.round((pos.y - this.dragState.startY) / ROW_HEIGHT);
+      const leadMidi = Math.max(MIN_MIDI, Math.min(MAX_MIDI, this.dragState.origMidi + dMidi));
+
+      if (leadMidi !== this.dragState.lastAuditionMidi) {
+        this.dragState.lastAuditionMidi = leadMidi;
+        this.onAuditionNote(track, leadMidi, 0.14, this.dragState.leadNote.velocity ?? 0.84);
+      }
+
+      let minStartAfterDelta = Infinity;
+      for (const s of this.dragState.snapshots) {
+        if (s.origStart + snappedDelta < minStartAfterDelta) {
+          minStartAfterDelta = s.origStart + snappedDelta;
+        }
+      }
+      const clampedDelta = minStartAfterDelta < 0 ? snappedDelta - minStartAfterDelta : snappedDelta;
+
+      for (const s of this.dragState.snapshots) {
+        s.note.start = Math.max(0, Math.round((s.origStart + clampedDelta) * 10000) / 10000);
+        s.note.midi = Math.max(MIN_MIDI, Math.min(MAX_MIDI, s.origMidi + dMidi));
+      }
+      this.requestDraw();
       return;
     }
 
@@ -448,8 +693,36 @@ export class PianoRollView {
   handleMouseUp() {
     if (this.dragState) {
       const mode = this.dragState.mode;
+      if (mode === "box-select") {
+        const { startX, startY, curX, curY, shiftKey } = this.dragState;
+        const x1 = Math.min(startX, curX);
+        const x2 = Math.max(startX, curX);
+        const y1 = Math.min(startY, curY);
+        const y2 = Math.max(startY, curY);
+        const { stepWidth } = this.getGeometry();
+        const ctxData = this.getEditingContext();
+        const notes = ctxData?.clip?.notes || [];
+
+        if (!shiftKey) {
+          this.selectedNoteIds.clear();
+        }
+
+        if (x2 - x1 >= 4 || y2 - y1 >= 4) {
+          for (const n of notes) {
+            const r = MAX_MIDI - n.midi;
+            const nx1 = KEY_WIDTH + n.start * stepWidth;
+            const nx2 = nx1 + Math.max(4, n.length * stepWidth);
+            const ny1 = HEADER_HEIGHT + r * ROW_HEIGHT;
+            const ny2 = ny1 + ROW_HEIGHT;
+
+            if (nx1 < x2 && nx2 > x1 && ny1 < y2 && ny2 > y1) {
+              this.selectedNoteIds.add(n.id);
+            }
+          }
+        }
+      }
       this.dragState = null;
-      if (mode !== "key" && mode !== "scrub") {
+      if (mode !== "key" && mode !== "scrub" && mode !== "box-select") {
         this.onNotesChanged();
       }
       this.draw();
@@ -577,8 +850,7 @@ export class PianoRollView {
       const ny = HEADER_HEIGHT + r * ROW_HEIGHT + 1.5;
       const nw = Math.max(4, n.length * stepWidth - 1);
       const nh = ROW_HEIGHT - 3;
-      const vel = Math.max(0.15, Math.min(1, n.velocity ?? 0.84));
-      const isSelected = n.id === this.selectedNoteId;
+      const isSelected = this.selectedNoteIds.has(n.id);
 
       ctx.save();
       ctx.globalAlpha = 0.45 + vel * 0.55;
@@ -590,10 +862,12 @@ export class PianoRollView {
 
       if (isSelected) {
         ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.roundRect(nx, ny, nw, nh, 3.5);
         ctx.stroke();
+        ctx.fillStyle = "rgba(255, 255, 255, 0.22)";
+        ctx.fill();
       }
 
       // Velocity mini-indicator bar along bottom of note
@@ -737,7 +1011,22 @@ export class PianoRollView {
     ctx.fillRect(scrollLeft, 0, KEY_WIDTH, HEADER_HEIGHT);
     ctx.fillStyle = this.snapStep === 0 ? "#ffd166" : "#54a0ff";
     ctx.font = "800 9px Pretendard, system-ui, sans-serif";
-    ctx.fillText(this.snapStep === 0 ? "FREE" : "SNAP", scrollLeft + 10, 16);
+    // Render Marquee Selection Box
+    if (this.dragState && this.dragState.mode === "box-select") {
+      const { startX, startY, curX, curY } = this.dragState;
+      const bx = Math.min(startX, curX);
+      const by = Math.min(startY, curY);
+      const bw = Math.abs(curX - startX);
+      const bh = Math.abs(curY - startY);
+      ctx.save();
+      ctx.fillStyle = "rgba(56, 189, 248, 0.18)";
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.restore();
+    }
 
     ctx.restore();
   }

@@ -102,6 +102,15 @@ export const INSTRUMENT_PRESETS = [
     baseMidi: 60,
     synth: { waveform: "sine", cutoff: 5200, resonance: 1.0, attack: 0.005, decay: 0.7, sustain: 0.3, release: 0.45, detune: 4, subMix: 0.1, fmAmount: 2.6 },
   },
+  {
+    id: "sub808_boom",
+    name: "808 Trap Sub Bass",
+    category: "Bass",
+    color: "#ff5252",
+    engine: "kick808",
+    baseMidi: 36,
+    synth: { decay: 0.95 },
+  },
 ];
 
 export const AVAILABLE_MELODIC_INSTRUMENTS = [

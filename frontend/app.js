@@ -1409,7 +1409,24 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null,
             ${drumRows.map((r) => `<option value="${r.key}" ${r.key === currentTargetRowKey ? "selected" : ""}>${r.isMelodic ? "🎹" : "🥁"} ${escapeHtml(r.name)}</option>`).join("")}
           </select>
         </label>
-        ` : ""}
+        <label class="pr-label">소리 변경
+          <select class="mini-select" data-role="pr-sound-swap" title="현재 선택된 채널의 소리/가상악기 즉시 변경">
+            <option value="" disabled selected>🔄 소리 교체...</option>
+            <optgroup label="🎹 가상 악기 & 808 베이스">
+              ${AVAILABLE_MELODIC_INSTRUMENTS.map((m) => `<option value="melodic:${m.id}">🎹 ${m.name}</option>`).join("")}
+            </optgroup>
+            <optgroup label="🥁 드럼 & 퍼커션">
+              ${AVAILABLE_DRUM_SOUNDS.map((d) => `<option value="drum:${d.id}">🥁 ${d.name}</option>`).join("")}
+            </optgroup>
+          </select>
+        </label>
+        ` : `
+        <label class="pr-label">🎷 악기 프리셋
+          <select class="mini-select" data-role="pr-inst-preset" title="이 피아노롤 트랙의 가상악기 프리셋 변경">
+            ${INSTRUMENT_PRESETS.map((p) => `<option value="${p.id}" ${track.presetId === p.id ? "selected" : ""}>🎹 ${p.name} (${p.category})</option>`).join("")}
+          </select>
+        </label>
+        `}
         <label class="pr-label">박자 스냅
           <select class="mini-select" data-role="snap-select">${snapOptsHtml}</select>
         </label>
@@ -1580,6 +1597,79 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null,
         winId,
         targetRow ? `피아노 롤 (루프) · ${targetRow.name} — ${clip.name || "Beat Clip"}` : `피아노 롤 (패턴 루프) · ${track.name} — ${clip.name || "Beat Clip"}`
       );
+    });
+  }
+
+  const soundSwapSelect = win.bodyEl.querySelector('[data-role="pr-sound-swap"]');
+  if (soundSwapSelect) {
+    soundSwapSelect.addEventListener("change", () => {
+      if (!currentTargetRowKey) {
+        showToast("소리를 변경할 채널을 먼저 선택해주세요.");
+        soundSwapSelect.value = "";
+        return;
+      }
+      const val = soundSwapSelect.value;
+      const [type, id] = val.split(":");
+      const spec = (type === "melodic" ? AVAILABLE_MELODIC_INSTRUMENTS : AVAILABLE_DRUM_SOUNDS).find((s) => s.id === id);
+      if (!spec) return;
+
+      const rows = getTrackDrumRows(track);
+      const r = rows.find((x) => x.key === currentTargetRowKey);
+      if (r) {
+        r.name = spec.name;
+        r.color = spec.color;
+        r.engine = spec.engine;
+        r.baseMidi = spec.baseMidi || (spec.isMelodic ? 60 : 36);
+        r.isMelodic = Boolean(spec.isMelodic);
+        r.synth = { ...(spec.synth || {}) };
+        r.category = spec.category;
+        persistLocal();
+
+        targetRow = r;
+        prView.setTargetRowKey(currentTargetRowKey, r.color, r.baseMidi);
+        wm.setWindowAccent(winId, r.color);
+        wm.setWindowTitle(winId, `피아노 롤 (루프) · ${r.name} — ${clip.name || "Beat Clip"}`);
+
+        // Update channel selector options
+        if (chanSelect) {
+          chanSelect.innerHTML = `<option value="">(전체 채널)</option>` + rows.map((x) => `<option value="${x.key}" ${x.key === currentTargetRowKey ? "selected" : ""}>${x.isMelodic ? "🎹" : "🥁"} ${escapeHtml(x.name)}</option>`).join("");
+        }
+
+        // Audition new sound
+        const strip = engine.graph?.strips.get(track.id);
+        triggerInstrumentVoice(engine.ctx, strip ? strip.input : engine.graph.masterBus, r, r.baseMidi, engine.ctx.currentTime, spec.isMelodic ? 0.45 : 0.25, 0.9);
+
+        // Update Beat Sequencer windows
+        for (const bs of openBeatSeqs.values()) {
+          if (bs.trackId === track.id) bs.renderGrid();
+        }
+        showToast(`'${spec.name}'(으)로 소리가 변경되었습니다!`);
+      }
+      soundSwapSelect.value = "";
+    });
+  }
+
+  const instPresetSelect = win.bodyEl.querySelector('[data-role="pr-inst-preset"]');
+  if (instPresetSelect) {
+    instPresetSelect.addEventListener("change", () => {
+      const p = INSTRUMENT_PRESETS.find((x) => x.id === instPresetSelect.value);
+      if (p) {
+        track.presetId = p.id;
+        track.pluginName = p.name;
+        track.category = p.category;
+        track.color = p.color;
+        track.engine = p.engine;
+        track.baseMidi = p.baseMidi;
+        track.synth = { ...p.synth };
+        wm.setWindowAccent(winId, p.color);
+        wm.setWindowTitle(winId, `피아노롤 · ${p.name} — ${clip.name || "MIDI Clip"}`);
+        engine.previewTrackNote(track, p.baseMidi || 60, 0.45, 0.88);
+        persistLocal();
+        renderTrackHeaders();
+        renderMixer();
+        prView.draw();
+        showToast(`🎷 악기가 '${p.name}'(으)로 변경되었습니다!`);
+      }
     });
   }
   const drawBtn = win.bodyEl.querySelector('[data-role="tool-draw"]');

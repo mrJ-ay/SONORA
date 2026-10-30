@@ -188,6 +188,26 @@ function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurS
         }
       }
     }
+
+    // Melodic / Pitch notes placed via Piano Roll (Loop Mode) on this drum kit pattern
+    const notes = clip.notes || [];
+    for (const n of notes) {
+      const nStart = Math.max(0, Number(n.start) || 0);
+      if (Math.floor(nStart) === localStep) {
+        const subStepOffsetSec = (nStart - localStep) * stepDurSec;
+        const durSec = Math.max(0.06, Number(n.length) || 0.5) * stepDurSec * 0.96;
+        const targetRow = rows.find((r) => (r.baseMidi || 36) === n.midi) || rows[0];
+        triggerInstrumentVoice(
+          ctx,
+          strip.input,
+          targetRow || track,
+          n.midi,
+          stepTime + subStepOffsetSec,
+          durSec,
+          n.velocity ?? 0.82
+        );
+      }
+    }
   } else {
     const notes = clip.notes || [];
     for (const n of notes) {
@@ -365,8 +385,9 @@ export class SonoraEngine {
     const strip = this.graph?.strips.get(track.id);
     const dest = strip ? strip.input : this.graph.masterBus;
     if (track.type === "drumkit") {
-      const drumRow = DRUM_ROWS.find((d) => d.baseMidi === midi) || DRUM_ROWS[0];
-      triggerInstrumentVoice(this.ctx, dest, drumRow, drumRow.baseMidi, this.ctx.currentTime, durationSec, velocity);
+      const rows = getTrackDrumRows(track);
+      const drumRow = rows.find((d) => (d.baseMidi || 36) === midi) || rows[0];
+      triggerInstrumentVoice(this.ctx, dest, drumRow || track, midi, this.ctx.currentTime, durationSec, velocity);
     } else {
       triggerInstrumentVoice(this.ctx, dest, track, midi, this.ctx.currentTime, durationSec, velocity);
     }

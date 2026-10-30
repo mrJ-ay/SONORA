@@ -27,7 +27,7 @@ export const SNAP_OPTIONS = [
 ];
 
 export class PianoRollView {
-  constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote, onSeekStep }) {
+  constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote, onSeekStep, isLoopMode = false }) {
     this.canvas = canvas;
     this.container = container;
     this.ctx = canvas.getContext("2d");
@@ -35,6 +35,7 @@ export class PianoRollView {
     this.onNotesChanged = onNotesChanged;
     this.onAuditionNote = onAuditionNote;
     this.onSeekStep = onSeekStep;
+    this.isLoopMode = Boolean(isLoopMode);
 
     this.snapStep = 0.5; // Default to 1/32 (반박 쪼개기 가능!) right out of the box
     this.tool = "draw";  // "draw" | "slice"
@@ -139,6 +140,14 @@ export class PianoRollView {
   scrollToCenterOctave() {
     const c4Row = MAX_MIDI - 64;
     this.container.scrollTop = Math.max(0, c4Row * ROW_HEIGHT - 80);
+  }
+
+  scrollToMidi(midi) {
+    const clampedMidi = Math.max(MIN_MIDI, Math.min(MAX_MIDI, Number(midi) || 48));
+    const row = MAX_MIDI - clampedMidi;
+    const targetY = HEADER_HEIGHT + row * ROW_HEIGHT;
+    const clientH = this.container.clientHeight || 400;
+    this.container.scrollTop = Math.max(0, targetY - clientH / 2);
   }
 
   coordsFromEvent(e) {
@@ -604,6 +613,45 @@ export class PianoRollView {
         ctx.font = "800 9.5px Pretendard, system-ui, sans-serif";
         ctx.fillText(midiToName(n.midi), nx + 4, ny + 10.5);
       }
+    }
+
+    // Loop boundary & Loop shading (if in Loop Mode)
+    if (this.isLoopMode) {
+      const clip = this.getEditingContext()?.clip;
+      const loopSteps = (Number(clip?.patternBars) || 1) * 16;
+      const loopX = KEY_WIDTH + loopSteps * stepWidth;
+
+      // Darken outside loop region to make active loop area crystal clear
+      if (loopX < width) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.44)";
+        ctx.fillRect(loopX, HEADER_HEIGHT, width - loopX, height - HEADER_HEIGHT);
+      }
+
+      // Loop boundary line (cyan neon dashed)
+      ctx.save();
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(loopX, 0);
+      ctx.lineTo(loopX, height);
+      ctx.stroke();
+      ctx.restore();
+
+      // Loop end marker badge on header ruler
+      const patBars = clip?.patternBars || 1;
+      const badgeText = `🔁 ${patBars}마디 루프 (${loopSteps}스텝)`;
+      ctx.font = "800 10.5px Pretendard, system-ui, sans-serif";
+      const bw = ctx.measureText(badgeText).width + 16;
+      ctx.fillStyle = "#0284c7";
+      ctx.beginPath();
+      ctx.roundRect(loopX - bw / 2, 3, bw, 20, 4);
+      ctx.fill();
+      ctx.strokeStyle = "#7dd3fc";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(badgeText, loopX - bw / 2 + 8, 17);
     }
 
     // Playhead (Vertical scrubber indicator with neon glow, marker badge & off-screen tracker)

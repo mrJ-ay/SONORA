@@ -137,11 +137,25 @@ const engine = new SonoraEngine(
         continue;
       }
       const clipStart = (clip.bar || 0) * 16;
-      if (globalStep >= clipStart) {
-        const localStep = globalStep - clipStart;
-        prEntry.view.setPlayhead(localStep);
+      const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
+      if (prEntry.view.isLoopMode) {
+        const patSteps = (clip.patternBars || 1) * 16;
+        if (engine.loopClipId === clip.id) {
+          const localStep = (globalStep - clipStart) % patSteps;
+          prEntry.view.setPlayhead(localStep >= 0 ? localStep : 0);
+        } else if (globalStep >= clipStart && globalStep < clipEnd) {
+          const localStep = (globalStep - clipStart) % patSteps;
+          prEntry.view.setPlayhead(localStep);
+        } else {
+          prEntry.view.setPlayhead(-1);
+        }
       } else {
-        prEntry.view.setPlayhead(-1);
+        if (globalStep >= clipStart) {
+          const localStep = globalStep - clipStart;
+          prEntry.view.setPlayhead(localStep);
+        } else {
+          prEntry.view.setPlayhead(-1);
+        }
       }
     }
 
@@ -211,6 +225,9 @@ if (zoomInArrBtn) zoomInArrBtn.addEventListener("click", () => arrangementView.z
 
 function syncLoopButtons() {
   for (const bs of openBeatSeqs.values()) bs.syncLoopBtn();
+  for (const pr of openPianoRolls.values()) {
+    if (typeof pr.syncLoopBtn === "function") pr.syncLoopBtn();
+  }
 }
 
 function cleanupOrphanClipWindows() {
@@ -1067,16 +1084,23 @@ function syncMelodicClipLength(c) {
   }
 }
 
-function openPianoRollWindow(track, clip) {
+function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null) {
+  if (track.type === "drumkit") {
+    isLoopMode = true;
+  }
   const winId = `win-pr-${clip.id}`;
   if (openPianoRolls.has(clip.id)) {
+    const entry = openPianoRolls.get(clip.id);
     wm.toggleMinimize(winId, false);
     wm.focusWindow(winId);
+    if (centerMidi != null && entry.view) {
+      entry.view.scrollToMidi(centerMidi);
+    }
     return;
   }
 
-  // Piano roll is infinite & linear (never looped)
-  if (engine.loopClipId) {
+  // Linear piano roll clears loop mode, but loop-mode piano roll preserves loop state!
+  if (!isLoopMode && engine.loopClipId) {
     engine.loopClipId = null;
     syncLoopButtons();
   }
@@ -1085,11 +1109,15 @@ function openPianoRollWindow(track, clip) {
     (o) => `<option value="${o.value}" ${Number(o.step) === 0.5 ? "selected" : ""}>${o.label}</option>`
   ).join("");
 
+  const winTitle = isLoopMode
+    ? `피아노 롤 (패턴 루프) · ${track.name} — ${clip.name || "Beat Clip"}`
+    : `피아노롤 · ${track.name} — ${clip.name || "MIDI Clip"}`;
+
   const win = wm.createWindow({
     id: winId,
-    title: `피아노롤 · ${track.name} — ${clip.name || "MIDI Clip"}`,
+    title: winTitle,
     icon: "🎹",
-    accentColor: track.color || "#54a0ff",
+    accentColor: track.color || (isLoopMode ? "#f59e0b" : "#54a0ff"),
     closable: true,
     width: 920,
     height: 520,
@@ -1115,7 +1143,7 @@ function openPianoRollWindow(track, clip) {
   win.bodyEl.innerHTML = `
     <div class="pr-toolbar">
       <div class="pr-tool-group">
-        <input class="clip-name-input" data-role="clip-name" type="text" value="${escapeHtml(clip.name || "MIDI Clip")}" title="클립 이름">
+        <input class="clip-name-input" data-role="clip-name" type="text" value="${escapeHtml(clip.name || (isLoopMode ? "Beat Clip" : "MIDI Clip"))}" title="클립 이름">
         <label class="pr-label">박자 스냅
           <select class="mini-select" data-role="snap-select">${snapOptsHtml}</select>
         </label>
@@ -1126,6 +1154,16 @@ function openPianoRollWindow(track, clip) {
           <button class="mini-btn" data-role="zoom-out" type="button">−</button>
           <button class="mini-btn" data-role="zoom-in" type="button">＋</button>
         </div>
+        ${isLoopMode ? `
+        <label class="pr-label">🔁 루프 길이
+          <select class="mini-select" data-role="pattern-bars">
+            <option value="1" ${(clip.patternBars || 1) === 1 ? "selected" : ""}>1마디 (16스텝)</option>
+            <option value="2" ${clip.patternBars === 2 ? "selected" : ""}>2마디 (32스텝)</option>
+            <option value="4" ${clip.patternBars === 4 ? "selected" : ""}>4마디 (64스텝)</option>
+          </select>
+        </label>
+        <button class="mini-btn ${engine.loopClipId === clip.id ? "active" : ""}" data-role="loop-btn" type="button" title="이 패턴만 반복 루프 재생">🔁 패턴 루프</button>
+        ` : ""}
       </div>
       <div class="pr-tool-group">
         <label class="pr-label">스케일
@@ -1136,6 +1174,7 @@ function openPianoRollWindow(track, clip) {
             <option value="chromatic" ${project.scale === "chromatic" ? "selected" : ""}>Chromatic</option>
           </select>
         </label>
+        ${track.type === "drumkit" ? `<button class="mini-btn" data-role="open-beat-seq" type="button" title="비트 시퀀서 창으로 전환">🥁 비트 시퀀서</button>` : ""}
         <button class="mini-btn" data-role="open-inst" type="button">🎛 악기 설정</button>
         <button class="mini-btn" data-role="clear-notes" type="button">비우기</button>
       </div>
@@ -1144,8 +1183,8 @@ function openPianoRollWindow(track, clip) {
       <canvas data-role="pr-canvas"></canvas>
     </div>
     <div class="pr-footer-hint">
-      <span>💡 <b>상단 룰러 클릭</b>: 재생 위치 이동 · <b>Shift+휠</b>: 가로 무한 스크롤 · <b>Shift+드래그</b>: 자유 박자 · <b>양끝 드래그</b>: 길이 조절</span>
-      <span>노트 위 휠: 벨로시티(강약) · 우클릭: 삭제</span>
+      <span>💡 <b>상단 룰러 클릭</b>: 재생 위치 이동 · <b>Shift+휠</b>: 가로 스크롤 · <b>Shift+드래그</b>: 자유 박자 · <b>양끝 드래그</b>: 길이 조절</span>
+      <span>${isLoopMode ? "🔁 <b>패턴 루프 모드</b>: 마디 루프 범위 안에서 멜로디 / 808 피치 노트가 반복 재생됩니다." : "노트 위 휠: 벨로시티(강약) · 우클릭: 삭제"}</span>
     </div>
   `;
 
@@ -1153,6 +1192,7 @@ function openPianoRollWindow(track, clip) {
   const canvasEl = win.bodyEl.querySelector('[data-role="pr-canvas"]');
 
   const prView = new PianoRollView(canvasEl, scrollEl, {
+    isLoopMode,
     getEditingContext: () => ({
       project,
       track: (project.tracks || []).find((t) => t.id === track.id),
@@ -1160,9 +1200,13 @@ function openPianoRollWindow(track, clip) {
     }),
     onNotesChanged: () => {
       const c = (project.clips || []).find((x) => x.id === clip.id);
-      syncMelodicClipLength(c);
+      if (!isLoopMode) {
+        syncMelodicClipLength(c);
+      }
       persistLocal();
       arrangementView.draw();
+      const bs = openBeatSeqs.get(clip.id);
+      if (bs) bs.renderGrid();
     },
     onAuditionNote: (trk, midi, dur = 0.22, vel = 0.85) => {
       engine.previewTrackNote(trk, midi, dur, vel);
@@ -1170,12 +1214,25 @@ function openPianoRollWindow(track, clip) {
     onSeekStep: (localStep) => {
       const c = (project.clips || []).find((x) => x.id === clip.id);
       const clipStart = (c?.bar || 0) * 16;
-      const targetStep = Math.max(0, clipStart + localStep);
-      engine.seekToBar(targetStep / 16);
+      if (isLoopMode && engine.loopClipId === clip.id) {
+        const patSteps = (c?.patternBars || 1) * 16;
+        const boundedStep = localStep % patSteps;
+        engine.seekToBar((clipStart + boundedStep) / 16);
+      } else {
+        const targetStep = Math.max(0, clipStart + localStep);
+        engine.seekToBar(targetStep / 16);
+      }
     },
   });
 
-  openPianoRolls.set(clip.id, { winId, view: prView, trackId: track.id });
+  const syncLoopBtn = () => {
+    const lBtn = win.bodyEl.querySelector('[data-role="loop-btn"]');
+    if (lBtn) {
+      lBtn.classList.toggle("active", engine.loopClipId === clip.id);
+    }
+  };
+
+  openPianoRolls.set(clip.id, { winId, view: prView, trackId: track.id, syncLoopBtn });
 
   const nameInput = win.bodyEl.querySelector('[data-role="clip-name"]');
   const snapSelect = win.bodyEl.querySelector('[data-role="snap-select"]');
@@ -1185,13 +1242,15 @@ function openPianoRollWindow(track, clip) {
   const zoomOutBtn = win.bodyEl.querySelector('[data-role="zoom-out"]');
   const zoomInBtn = win.bodyEl.querySelector('[data-role="zoom-in"]');
   const patBarsSelect = win.bodyEl.querySelector('[data-role="pattern-bars"]');
+  const loopBtn = win.bodyEl.querySelector('[data-role="loop-btn"]');
+  const openBeatSeqBtn = win.bodyEl.querySelector('[data-role="open-beat-seq"]');
   const scaleSelect = win.bodyEl.querySelector('[data-role="scale-select"]');
   const openInstBtn = win.bodyEl.querySelector('[data-role="open-inst"]');
   const clearBtn = win.bodyEl.querySelector('[data-role="clear-notes"]');
 
   nameInput.addEventListener("input", () => {
     clip.name = nameInput.value;
-    wm.setWindowTitle(winId, `피아노롤 · ${track.name} — ${clip.name || "MIDI Clip"}`);
+    wm.setWindowTitle(winId, `${isLoopMode ? "피아노 롤 (패턴 루프)" : "피아노롤"} · ${track.name} — ${clip.name || "Clip"}`);
     persistLocal();
     arrangementView.draw();
   });
@@ -1228,7 +1287,27 @@ function openPianoRollWindow(track, clip) {
       if ((clip.lengthBars || 1) < clip.patternBars) clip.lengthBars = clip.patternBars;
       persistLocal();
       prView.resizeAndDraw();
+      const bs = openBeatSeqs.get(clip.id);
+      if (bs) bs.renderGrid();
       arrangementView.resizeAndDraw();
+    });
+  }
+
+  if (loopBtn) {
+    loopBtn.addEventListener("click", () => {
+      engine.loopClipId = engine.loopClipId === clip.id ? null : clip.id;
+      syncLoopButtons();
+      if (engine.loopClipId && !engine.isPlaying) {
+        playBtn.click();
+      }
+    });
+  }
+
+  if (openBeatSeqBtn) {
+    openBeatSeqBtn.addEventListener("click", () => {
+      const trk = (project.tracks || []).find((t) => t.id === track.id);
+      const cl = (project.clips || []).find((c) => c.id === clip.id);
+      if (trk && cl) openBeatSeqWindow(trk, cl);
     });
   }
 
@@ -1250,7 +1329,11 @@ function openPianoRollWindow(track, clip) {
   syncLoopButtons();
   requestAnimationFrame(() => {
     prView.resizeAndDraw();
-    prView.scrollToCenterOctave();
+    if (centerMidi != null) {
+      prView.scrollToMidi(centerMidi);
+    } else {
+      prView.scrollToCenterOctave();
+    }
   });
 }
 
@@ -1300,6 +1383,7 @@ function openBeatSeqWindow(track, clip) {
           </select>
         </label>
         <button class="mini-btn accent" data-role="open-add-drum" type="button" style="font-weight:800;">＋ 🥁 악기 / 사운드 추가</button>
+        <button class="mini-btn accent" data-role="open-pr-loop" type="button" style="font-weight:800;background:linear-gradient(135deg, #f59e0b, #d97706);color:#fff;" title="이 비트 패턴에 멜로디 / 피치 / 808 노트를 입력할 수 있는 루프 피아노 롤을 엽니다">🎹 루프 피아노 롤</button>
       </div>
       <div class="pr-tool-group">
         <button class="mini-btn" data-role="open-inst-win" type="button">🎛 드럼 악기 설정</button>
@@ -1315,9 +1399,18 @@ function openBeatSeqWindow(track, clip) {
   const patBarsSelect = win.bodyEl.querySelector('[data-role="pattern-bars"]');
   const subdivSelect = win.bodyEl.querySelector('[data-role="drum-subdiv"]');
   const addDrumBtn = win.bodyEl.querySelector('[data-role="open-add-drum"]');
+  const openPrLoopBtn = win.bodyEl.querySelector('[data-role="open-pr-loop"]');
   const openInstWinBtn = win.bodyEl.querySelector('[data-role="open-inst-win"]');
   const loopBtn = win.bodyEl.querySelector('[data-role="loop-btn"]');
   const clearBtn = win.bodyEl.querySelector('[data-role="clear-btn"]');
+
+  if (openPrLoopBtn) {
+    openPrLoopBtn.addEventListener("click", () => {
+      const trk = (project.tracks || []).find((t) => t.id === track.id);
+      const cl = (project.clips || []).find((c) => c.id === clip.id);
+      if (trk && cl) openPianoRollWindow(trk, cl, true);
+    });
+  }
 
   const renderGrid = () => {
     const trk = (project.tracks || []).find((t) => t.id === track.id);
@@ -1359,6 +1452,15 @@ function openBeatSeqWindow(track, clip) {
       padBtn.innerHTML = `<span class="drum-dot" style="background:${dRow.color || "#ff5c5c"}"></span><span>${escapeHtml(dRow.name)}</span>`;
       padBtn.addEventListener("click", () => engine.previewDrumRow(trk, dRow.key));
 
+      const prBtn = document.createElement("button");
+      prBtn.type = "button";
+      prBtn.className = "mini-btn";
+      prBtn.title = `'${dRow.name}' 음정/멜로디/808 입력을 위한 루프 피아노 롤 열기`;
+      prBtn.textContent = "🎹";
+      prBtn.addEventListener("click", () => {
+        openPianoRollWindow(trk, cl, true, dRow.baseMidi || 36);
+      });
+
       const loadSmpBtn = document.createElement("button");
       loadSmpBtn.type = "button";
       loadSmpBtn.className = "mini-btn";
@@ -1393,6 +1495,7 @@ function openBeatSeqWindow(track, clip) {
       });
 
       headEl.appendChild(padBtn);
+      headEl.appendChild(prBtn);
       headEl.appendChild(loadSmpBtn);
       headEl.appendChild(delBtn);
 
@@ -2585,10 +2688,23 @@ function animationFrame() {
       if (!clip) continue;
       const clipStart = (clip.bar || 0) * 16;
       const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
-      if (currentStep >= clipStart && currentStep < clipEnd) {
-        prEntry.view.setPlayhead(currentStep - clipStart);
+      if (prEntry.view.isLoopMode) {
+        const patSteps = (clip.patternBars || 1) * 16;
+        if (engine.loopClipId === clip.id) {
+          const localStep = (currentStep - clipStart) % patSteps;
+          prEntry.view.setPlayhead(localStep >= 0 ? localStep : 0);
+        } else if (currentStep >= clipStart && currentStep < clipEnd) {
+          const localStep = (currentStep - clipStart) % patSteps;
+          prEntry.view.setPlayhead(localStep);
+        } else {
+          prEntry.view.setPlayhead(-1);
+        }
       } else {
-        prEntry.view.setPlayhead(-1);
+        if (currentStep >= clipStart) {
+          prEntry.view.setPlayhead(currentStep - clipStart);
+        } else {
+          prEntry.view.setPlayhead(-1);
+        }
       }
     }
 

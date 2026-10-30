@@ -989,6 +989,34 @@ body {
   flex-wrap: wrap;
 }
 
+.pr-transport-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #090d15;
+  padding: 2px 5px;
+  border-radius: 7px;
+  border: 1px solid var(--border-hi);
+}
+
+.mini-btn.pr-play-btn {
+  font-weight: 800;
+  transition: all 0.15s ease;
+}
+
+.mini-btn.pr-play-btn.playing {
+  background: #10b981 !important;
+  border-color: #10b981 !important;
+  color: #041d13 !important;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.5) !important;
+}
+
+.mini-btn.pr-stop-btn:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #fff;
+}
+
 .pr-label {
   font-size: 0.7rem;
   font-weight: 700;

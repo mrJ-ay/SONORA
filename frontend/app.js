@@ -146,7 +146,7 @@ const engine = new SonoraEngine(
       const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
       if (prEntry.view.isLoopMode) {
         const patSteps = (clip.patternBars || 1) * 16;
-        if (engine.loopClipId === clip.id) {
+        if (engine.loopClipId === clip.id || engine.soloClipId === clip.id) {
           const localStep = (globalStep - clipStart) % patSteps;
           prEntry.view.setPlayhead(localStep >= 0 ? localStep : 0);
         } else if (globalStep >= clipStart && globalStep < clipEnd) {
@@ -156,7 +156,10 @@ const engine = new SonoraEngine(
           prEntry.view.setPlayhead(-1);
         }
       } else {
-        if (globalStep >= clipStart) {
+        if (engine.soloClipId === clip.id || engine.loopClipId === clip.id) {
+          const localStep = globalStep - clipStart;
+          prEntry.view.setPlayhead(localStep >= 0 ? localStep : 0);
+        } else if (globalStep >= clipStart) {
           const localStep = globalStep - clipStart;
           prEntry.view.setPlayhead(localStep);
         } else {
@@ -230,9 +233,13 @@ if (zoomOutArrBtn) zoomOutArrBtn.addEventListener("click", () => arrangementView
 if (zoomInArrBtn) zoomInArrBtn.addEventListener("click", () => arrangementView.zoomIn());
 
 function syncLoopButtons() {
-  for (const bs of openBeatSeqs.values()) bs.syncLoopBtn();
+  for (const bs of openBeatSeqs.values()) {
+    if (typeof bs.syncTransport === "function") bs.syncTransport();
+    else if (typeof bs.syncLoopBtn === "function") bs.syncLoopBtn();
+  }
   for (const pr of openPianoRolls.values()) {
-    if (typeof pr.syncLoopBtn === "function") pr.syncLoopBtn();
+    if (typeof pr.syncTransport === "function") pr.syncTransport();
+    else if (typeof pr.syncLoopBtn === "function") pr.syncLoopBtn();
   }
 }
 
@@ -1261,16 +1268,25 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
         entry.view.destroy();
         openPianoRolls.delete(clip.id);
       }
-      if (engine.loopClipId === clip.id) {
+      if (engine.soloClipId === clip.id || engine.loopClipId === clip.id) {
+        engine.soloClipId = null;
         engine.loopClipId = null;
+        if (engine.isPlaying) engine.stop(false);
         syncLoopButtons();
       }
     },
   });
 
+  let prLoopActive = true;
+
   win.bodyEl.innerHTML = `
     <div class="pr-toolbar">
       <div class="pr-tool-group">
+        <div class="pr-transport-group" title="피아노롤 단독 재생 컨트롤">
+          <button class="mini-btn pr-play-btn" data-role="pr-play" type="button" title="이 피아노롤만 재생 / 일시정지 (Space)">▶ 재생</button>
+          <button class="mini-btn pr-stop-btn" data-role="pr-stop" type="button" title="정지 후 피아노롤 처음으로 이동">■ 정지</button>
+          <button class="mini-btn active" data-role="pr-loop" type="button" title="피아노롤 반복 루프 재생 켜기/끄기">🔁 루프</button>
+        </div>
         <input class="clip-name-input" data-role="clip-name" type="text" value="${escapeHtml(clip.name || (isLoopMode ? "Beat Clip" : "MIDI Clip"))}" title="클립 이름">
         <label class="pr-label">박자 스냅
           <select class="mini-select" data-role="snap-select">${snapOptsHtml}</select>
@@ -1283,14 +1299,13 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
           <button class="mini-btn" data-role="zoom-in" type="button">＋</button>
         </div>
         ${isLoopMode ? `
-        <label class="pr-label">🔁 루프 길이
+        <label class="pr-label">🔁 패턴 길이
           <select class="mini-select" data-role="pattern-bars">
             <option value="1" ${(clip.patternBars || 1) === 1 ? "selected" : ""}>1마디 (16스텝)</option>
             <option value="2" ${clip.patternBars === 2 ? "selected" : ""}>2마디 (32스텝)</option>
             <option value="4" ${clip.patternBars === 4 ? "selected" : ""}>4마디 (64스텝)</option>
           </select>
         </label>
-        <button class="mini-btn ${engine.loopClipId === clip.id ? "active" : ""}" data-role="loop-btn" type="button" title="이 패턴만 반복 루프 재생">🔁 패턴 루프</button>
         ` : ""}
       </div>
       <div class="pr-tool-group">
@@ -1342,7 +1357,7 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     onSeekStep: (localStep) => {
       const c = (project.clips || []).find((x) => x.id === clip.id);
       const clipStart = (c?.bar || 0) * 16;
-      if (isLoopMode && engine.loopClipId === clip.id) {
+      if (isLoopMode && (engine.loopClipId === clip.id || engine.soloClipId === clip.id)) {
         const patSteps = (c?.patternBars || 1) * 16;
         const boundedStep = localStep % patSteps;
         engine.seekToBar((clipStart + boundedStep) / 16);
@@ -1353,14 +1368,66 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     },
   });
 
-  const syncLoopBtn = () => {
+  const prPlayBtn = win.bodyEl.querySelector('[data-role="pr-play"]');
+  const prStopBtn = win.bodyEl.querySelector('[data-role="pr-stop"]');
+  const prLoopBtn = win.bodyEl.querySelector('[data-role="pr-loop"]');
+
+  const syncPrTransport = () => {
+    const isThisSolo = engine.isPlaying && (engine.soloClipId === clip.id || engine.loopClipId === clip.id);
+    if (prPlayBtn) {
+      prPlayBtn.classList.toggle("playing", isThisSolo);
+      prPlayBtn.textContent = isThisSolo ? "⏸ 일시정지" : "▶ 재생";
+    }
+    if (prLoopBtn) {
+      prLoopBtn.classList.toggle("active", prLoopActive);
+    }
     const lBtn = win.bodyEl.querySelector('[data-role="loop-btn"]');
     if (lBtn) {
       lBtn.classList.toggle("active", engine.loopClipId === clip.id);
     }
   };
 
-  openPianoRolls.set(clip.id, { winId, view: prView, trackId: track.id, syncLoopBtn });
+  openPianoRolls.set(clip.id, {
+    winId,
+    view: prView,
+    trackId: track.id,
+    clipId: clip.id,
+    syncLoopBtn: syncPrTransport,
+    syncTransport: syncPrTransport,
+    getLoopState: () => prLoopActive,
+  });
+
+  if (prPlayBtn) {
+    prPlayBtn.addEventListener("click", () => {
+      const isThisSolo = engine.isPlaying && (engine.soloClipId === clip.id || engine.loopClipId === clip.id);
+      if (isThisSolo) {
+        engine.stop(false);
+      } else {
+        engine.playClipSolo(clip.id, prLoopActive);
+      }
+      syncLoopButtons();
+    });
+  }
+
+  if (prStopBtn) {
+    prStopBtn.addEventListener("click", () => {
+      engine.stop(false);
+      const c = (project.clips || []).find((x) => x.id === clip.id);
+      engine.seekToBar(c?.bar || 0);
+      syncLoopButtons();
+    });
+  }
+
+  if (prLoopBtn) {
+    prLoopBtn.addEventListener("click", () => {
+      prLoopActive = !prLoopActive;
+      if (engine.isPlaying && (engine.soloClipId === clip.id || engine.loopClipId === clip.id)) {
+        engine.isLoopClip = prLoopActive;
+        engine.loopClipId = prLoopActive ? clip.id : null;
+      }
+      syncLoopButtons();
+    });
+  }
 
   const nameInput = win.bodyEl.querySelector('[data-role="clip-name"]');
   const snapSelect = win.bodyEl.querySelector('[data-role="snap-select"]');
@@ -1486,16 +1553,25 @@ function openBeatSeqWindow(track, clip) {
     minHeight: 250,
     onClose: () => {
       openBeatSeqs.delete(clip.id);
-      if (engine.loopClipId === clip.id) {
+      if (engine.soloClipId === clip.id || engine.loopClipId === clip.id) {
+        engine.soloClipId = null;
         engine.loopClipId = null;
+        if (engine.isPlaying) engine.stop(false);
         syncLoopButtons();
       }
     },
   });
 
+  let bsLoopActive = true;
+
   win.bodyEl.innerHTML = `
     <div class="pr-toolbar">
       <div class="pr-tool-group">
+        <div class="pr-transport-group" title="비트 시퀀서 단독 재생 컨트롤">
+          <button class="mini-btn pr-play-btn" data-role="bs-play" type="button" title="이 비트만 재생 / 일시정지 (Space)">▶ 재생</button>
+          <button class="mini-btn pr-stop-btn" data-role="bs-stop" type="button" title="정지 후 처음으로 이동">■ 정지</button>
+          <button class="mini-btn active" data-role="bs-loop" type="button" title="비트 반복 루프 재생 켜기/끄기">🔁 루프</button>
+        </div>
         <input class="clip-name-input" data-role="clip-name" type="text" value="${escapeHtml(clip.name || "Beat Clip")}">
         <label class="pr-label">루프 길이
           <select class="mini-select" data-role="pattern-bars">
@@ -1515,7 +1591,7 @@ function openBeatSeqWindow(track, clip) {
       </div>
       <div class="pr-tool-group">
         <button class="mini-btn" data-role="open-inst-win" type="button">🎛 드럼 악기 설정</button>
-        <button class="mini-btn" data-role="loop-btn" type="button">🔁 이 클립만 루프 재생</button>
+        <button class="mini-btn" data-role="loop-btn" type="button">🔁 이 패턴만 루프</button>
         <button class="mini-btn" data-role="clear-btn" type="button">비우기</button>
       </div>
     </div>
@@ -1531,6 +1607,9 @@ function openBeatSeqWindow(track, clip) {
   const openInstWinBtn = win.bodyEl.querySelector('[data-role="open-inst-win"]');
   const loopBtn = win.bodyEl.querySelector('[data-role="loop-btn"]');
   const clearBtn = win.bodyEl.querySelector('[data-role="clear-btn"]');
+  const bsPlayBtn = win.bodyEl.querySelector('[data-role="bs-play"]');
+  const bsStopBtn = win.bodyEl.querySelector('[data-role="bs-stop"]');
+  const bsLoopBtn = win.bodyEl.querySelector('[data-role="bs-loop"]');
 
   if (openPrLoopBtn) {
     openPrLoopBtn.addEventListener("click", () => {
@@ -1817,11 +1896,60 @@ function openBeatSeqWindow(track, clip) {
   addDrumBtn.addEventListener("click", () => showDrumPickerModal());
   openInstWinBtn.addEventListener("click", () => openInstrumentWindow(track.id));
 
+  const syncBsTransport = () => {
+    const isThisSolo = engine.isPlaying && (engine.soloClipId === clip.id || engine.loopClipId === clip.id);
+    if (bsPlayBtn) {
+      bsPlayBtn.classList.toggle("playing", isThisSolo);
+      bsPlayBtn.textContent = isThisSolo ? "⏸ 일시정지" : "▶ 재생";
+    }
+    if (bsLoopBtn) {
+      bsLoopBtn.classList.toggle("active", bsLoopActive);
+    }
+    if (loopBtn) {
+      const isLoop = engine.loopClipId === clip.id;
+      loopBtn.classList.toggle("active", isLoop);
+      loopBtn.textContent = isLoop ? "🔁 루프 중 (해제)" : "🔁 이 패턴만 루프";
+    }
+  };
+
+  if (bsPlayBtn) {
+    bsPlayBtn.addEventListener("click", () => {
+      const isThisSolo = engine.isPlaying && (engine.soloClipId === clip.id || engine.loopClipId === clip.id);
+      if (isThisSolo) {
+        engine.stop(false);
+      } else {
+        engine.playClipSolo(clip.id, bsLoopActive);
+      }
+      syncLoopButtons();
+    });
+  }
+
+  if (bsStopBtn) {
+    bsStopBtn.addEventListener("click", () => {
+      engine.stop(false);
+      const c = (project.clips || []).find((x) => x.id === clip.id);
+      engine.seekToBar(c?.bar || 0);
+      syncLoopButtons();
+    });
+  }
+
+  if (bsLoopBtn) {
+    bsLoopBtn.addEventListener("click", () => {
+      bsLoopActive = !bsLoopActive;
+      if (engine.isPlaying && (engine.soloClipId === clip.id || engine.loopClipId === clip.id)) {
+        engine.isLoopClip = bsLoopActive;
+        engine.loopClipId = bsLoopActive ? clip.id : null;
+      }
+      syncLoopButtons();
+    });
+  }
+
   loopBtn.addEventListener("click", () => {
     if (engine.loopClipId === clip.id) {
       engine.loopClipId = null;
     } else {
       engine.loopClipId = clip.id;
+      engine.soloClipId = clip.id;
       engine.seekToBar(clip.bar || 0);
       if (!engine.isPlaying) engine.start();
     }
@@ -1837,9 +1965,18 @@ function openBeatSeqWindow(track, clip) {
     arrangementView.draw();
   });
 
-  openBeatSeqs.set(clip.id, { winId, trackId: track.id, renderGrid, updatePlayhead, syncLoopBtn });
+  openBeatSeqs.set(clip.id, {
+    winId,
+    trackId: track.id,
+    clipId: clip.id,
+    renderGrid,
+    updatePlayhead,
+    syncLoopBtn: syncBsTransport,
+    syncTransport: syncBsTransport,
+    getLoopState: () => bsLoopActive,
+  });
   renderGrid();
-  syncLoopBtn();
+  syncBsTransport();
 }
 
 // 3) INDEPENDENT FLOATING TRACK PLUGIN / INSTRUMENT / DRUM RACK / EXTERNAL LOADER WINDOW
@@ -2818,7 +2955,7 @@ function animationFrame() {
       const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
       if (prEntry.view.isLoopMode) {
         const patSteps = (clip.patternBars || 1) * 16;
-        if (engine.loopClipId === clip.id) {
+        if (engine.loopClipId === clip.id || engine.soloClipId === clip.id) {
           const localStep = (currentStep - clipStart) % patSteps;
           prEntry.view.setPlayhead(localStep >= 0 ? localStep : 0);
         } else if (currentStep >= clipStart && currentStep < clipEnd) {
@@ -2828,7 +2965,10 @@ function animationFrame() {
           prEntry.view.setPlayhead(-1);
         }
       } else {
-        if (currentStep >= clipStart) {
+        if (engine.soloClipId === clip.id || engine.loopClipId === clip.id) {
+          const localStep = currentStep - clipStart;
+          prEntry.view.setPlayhead(localStep >= 0 ? localStep : 0);
+        } else if (currentStep >= clipStart) {
           prEntry.view.setPlayhead(currentStep - clipStart);
         } else {
           prEntry.view.setPlayhead(-1);
@@ -2841,7 +2981,10 @@ function animationFrame() {
       if (!clip) continue;
       const clipStart = (clip.bar || 0) * 16;
       const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
-      if (currentStep >= clipStart && currentStep < clipEnd) {
+      if (engine.soloClipId === clip.id || engine.loopClipId === clip.id) {
+        const localStep = (currentStep - clipStart) % ((clip.patternBars || 1) * 16);
+        bsEntry.updatePlayhead(localStep >= 0 ? localStep : 0);
+      } else if (currentStep >= clipStart && currentStep < clipEnd) {
         const localStep = (currentStep - clipStart) % ((clip.patternBars || 1) * 16);
         bsEntry.updatePlayhead(localStep);
       } else {
@@ -2868,6 +3011,7 @@ playBtn.addEventListener("click", async () => {
     engine.stop(false);
   } else {
     engine.loopClipId = null;
+    engine.soloClipId = null;
     syncLoopButtons();
     engine.start();
   }
@@ -2885,6 +3029,7 @@ stopBtn.addEventListener("click", async () => {
     return;
   }
   engine.loopClipId = null;
+  engine.soloClipId = null;
   syncLoopButtons();
   engine.stop(true);
 });
@@ -2928,8 +3073,44 @@ window.addEventListener("keydown", async (e) => {
       await finishLiveRecording();
       return;
     }
-    if (engine.isPlaying) engine.stop(false);
-    else engine.start();
+
+    const focusedWinId = wm.getFocusedWindowId();
+    if (focusedWinId) {
+      for (const [clipId, pr] of openPianoRolls.entries()) {
+        if (pr.winId === focusedWinId) {
+          const isThisSolo = engine.isPlaying && (engine.soloClipId === clipId || engine.loopClipId === clipId);
+          if (isThisSolo) {
+            engine.stop(false);
+          } else {
+            engine.playClipSolo(clipId, pr.getLoopState ? pr.getLoopState() : true);
+          }
+          syncLoopButtons();
+          return;
+        }
+      }
+
+      for (const [clipId, bs] of openBeatSeqs.entries()) {
+        if (bs.winId === focusedWinId) {
+          const isThisSolo = engine.isPlaying && (engine.soloClipId === clipId || engine.loopClipId === clipId);
+          if (isThisSolo) {
+            engine.stop(false);
+          } else {
+            engine.playClipSolo(clipId, bs.getLoopState ? bs.getLoopState() : true);
+          }
+          syncLoopButtons();
+          return;
+        }
+      }
+    }
+
+    if (engine.isPlaying) {
+      engine.stop(false);
+    } else {
+      engine.loopClipId = null;
+      engine.soloClipId = null;
+      syncLoopButtons();
+      engine.start();
+    }
   }
 });
 

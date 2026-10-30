@@ -10,6 +10,7 @@ export class WindowManager {
     this.topZ = 20;
     this.cascadeIndex = 0;
     this.activeDrag = null;
+    this.focusedId = null;
 
     this.snapPreview = document.createElement("div");
     this.snapPreview.className = "snap-preview-box";
@@ -166,11 +167,16 @@ export class WindowManager {
     const win = this.windows.get(id);
     if (!win) return;
     this.topZ += 1;
+    this.focusedId = id;
     win.el.style.zIndex = String(this.topZ);
     for (const [wid, w] of this.windows.entries()) {
       w.el.classList.toggle("focused", wid === id);
     }
     this.renderTaskbar();
+  }
+
+  getFocusedWindowId() {
+    return this.focusedId;
   }
 
   toggleMinimize(id, forceState) {
@@ -211,6 +217,7 @@ export class WindowManager {
     }
     if (win.onClose) win.onClose();
     win.el.remove();
+    if (this.focusedId === id) this.focusedId = null;
     this.windows.delete(id);
     this.renderTaskbar();
   }

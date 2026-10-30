@@ -237,6 +237,8 @@ export class SonoraEngine {
     this.graph = null;
     this.isPlaying = false;
     this.isRecording = false; // Prevents timeline wrap-around while live recording
+    this.soloClipId = null; // If set, only plays this clip
+    this.isLoopClip = true; // Loop state for solo clip playback
     this.loopClipId = null; // If set, loops just that clip; otherwise plays full Arrangement
     this.metronome = false;
 
@@ -443,6 +445,33 @@ export class SonoraEngine {
     this.scheduler();
   }
 
+  playClipSolo(clipId, loop = true) {
+    this.ensureContext();
+    const project = this.getProject();
+    const clip = (project.clips || []).find((c) => c.id === clipId);
+    if (!clip) return;
+    this.soloClipId = clipId;
+    this.isLoopClip = Boolean(loop);
+    this.loopClipId = loop ? clipId : null;
+
+    const clipStartStep = Math.floor((clip.bar || 0) * 16);
+    let clipBars = Math.max(1, Math.round(clip.lengthBars || 1));
+    if (clip.notes && clip.notes.length) {
+      let maxNoteEnd = 0;
+      for (const n of clip.notes) {
+        const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+        if (end > maxNoteEnd) maxNoteEnd = end;
+      }
+      clipBars = Math.max(clipBars, Math.ceil(maxNoteEnd / 16));
+    }
+    const clipEndStep = clipStartStep + clipBars * 16;
+    if (this.currentGlobalStep < clipStartStep || this.currentGlobalStep >= clipEndStep) {
+      this.currentGlobalStep = clipStartStep;
+      this.displayGlobalStep = clipStartStep;
+    }
+    this.start();
+  }
+
   stop(resetToZero = true) {
     this.isPlaying = false;
     if (this.timerId) {
@@ -453,8 +482,9 @@ export class SonoraEngine {
     this.visualQueue = [];
     if (resetToZero) {
       const project = this.getProject();
-      const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
-      this.currentGlobalStep = loopClip ? Math.floor((loopClip.bar || 0) * 16) : 0;
+      const activeClipId = this.soloClipId || this.loopClipId;
+      const targetClip = activeClipId ? (project.clips || []).find((c) => c.id === activeClipId) : null;
+      this.currentGlobalStep = targetClip ? Math.floor((targetClip.bar || 0) * 16) : 0;
       this.displayGlobalStep = this.currentGlobalStep;
     }
     if (this.onTick) this.onTick(this.displayGlobalStep, false);
@@ -501,13 +531,15 @@ export class SonoraEngine {
 
       const currentBar = Math.floor(stepIndex / 16);
       const stepInBar = stepIndex % 16;
+      const activeClipFilter = this.soloClipId || this.loopClipId;
 
       for (const clip of project.clips || []) {
         const track = (project.tracks || []).find((t) => t.id === clip.trackId);
         if (!track) continue;
 
+        if (activeClipFilter && activeClipFilter !== clip.id) continue;
+
         if (isAudioTimelineClip(track, clip)) {
-          if (this.loopClipId && this.loopClipId !== clip.id) continue;
           const clipStartStep = (Number(clip.bar) || 0) * 16;
           if (!this.triggeredAudioClipIds.has(clip.id) && clipStartStep >= stepIndex && clipStartStep < stepIndex + 1) {
             const strip = this.graph?.strips.get(track.id);
@@ -555,14 +587,31 @@ export class SonoraEngine {
         // Never wrap playhead back to start while actively recording audio!
         this.currentGlobalStep = stepIndex + 1;
       } else {
-        const loopClip = this.loopClipId ? (project.clips || []).find((c) => c.id === this.loopClipId) : null;
-        if (loopClip) {
-          const startStep = Math.floor((loopClip.bar || 0) * 16);
-          const endStep = startStep + Math.max(1, Math.round((loopClip.lengthBars || 1) * 16));
+        const activeClipId = this.soloClipId || this.loopClipId;
+        const targetClip = activeClipId ? (project.clips || []).find((c) => c.id === activeClipId) : null;
+        if (targetClip) {
+          const startStep = Math.floor((targetClip.bar || 0) * 16);
+          let clipBars = Math.max(1, Math.round(targetClip.lengthBars || 1));
+          if (targetClip.notes && targetClip.notes.length) {
+            let maxNoteEnd = 0;
+            for (const n of targetClip.notes) {
+              const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+              if (end > maxNoteEnd) maxNoteEnd = end;
+            }
+            clipBars = Math.max(clipBars, Math.ceil(maxNoteEnd / 16));
+          }
+          const endStep = startStep + clipBars * 16;
           const next = stepIndex + 1;
           if (next >= endStep || next < startStep) {
-            this.currentGlobalStep = startStep;
-            this.triggeredAudioClipIds.clear();
+            if (this.isLoopClip !== false) {
+              this.currentGlobalStep = startStep;
+              this.triggeredAudioClipIds.clear();
+            } else {
+              // Reached the end of single clip solo playback -> cleanly stop!
+              this.currentGlobalStep = startStep;
+              this.stop(false);
+              return;
+            }
           } else {
             this.currentGlobalStep = next;
           }

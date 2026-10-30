@@ -196,7 +196,7 @@ function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurS
       if (Math.floor(nStart) === localStep) {
         const subStepOffsetSec = (nStart - localStep) * stepDurSec;
         const durSec = Math.max(0.06, Number(n.length) || 0.5) * stepDurSec * 0.96;
-        const targetRow = rows.find((r) => (r.baseMidi || 36) === n.midi) || rows[0];
+        const targetRow = (n.rowKey && rows.find((r) => r.key === n.rowKey)) || rows.find((r) => (r.baseMidi || 36) === n.midi) || rows[0];
         triggerInstrumentVoice(
           ctx,
           strip.input,
@@ -411,7 +411,7 @@ export class SonoraEngine {
     this.ensureContext();
     const strip = this.graph?.strips.get(track.id);
     const dest = strip ? strip.input : this.graph.masterBus;
-    triggerInstrumentVoice(this.ctx, dest, spec, spec.baseMidi || 36, this.ctx.currentTime, 0.25, 0.9);
+    triggerInstrumentVoice(this.ctx, dest, spec, spec.baseMidi || (spec.isMelodic ? 60 : 36), this.ctx.currentTime, spec.isMelodic ? 0.45 : 0.25, 0.9);
   }
 
   getSongTotalSteps(project) {

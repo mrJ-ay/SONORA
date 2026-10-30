@@ -1,4 +1,4 @@
-import { DRUM_ROWS, INSTRUMENT_PRESETS, AVAILABLE_DRUM_SOUNDS, midiToName } from "./audio/instruments.js";
+import { DRUM_ROWS, INSTRUMENT_PRESETS, AVAILABLE_DRUM_SOUNDS, AVAILABLE_MELODIC_INSTRUMENTS, midiToName, triggerInstrumentVoice } from "./audio/instruments.js";
 import { SonoraEngine, exportProjectToWav, getTrackDrumRows } from "./audio/engine.js";
 import {
   importExternalInstrumentFile,
@@ -1316,7 +1316,7 @@ function syncMelodicClipLength(c) {
   }
 }
 
-function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null) {
+function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null, targetRowKey = null) {
   if (track.type === "drumkit") {
     isLoopMode = true;
   }
@@ -1325,7 +1325,17 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     const entry = openPianoRolls.get(clip.id);
     wm.toggleMinimize(winId, false);
     wm.focusWindow(winId);
-    if (centerMidi != null && entry.view) {
+    if (targetRowKey != null && entry.view) {
+      const rows = getTrackDrumRows(track);
+      const r = rows.find((x) => x.key === targetRowKey);
+      entry.view.setTargetRowKey(targetRowKey, r?.color || null, centerMidi || r?.baseMidi || (r?.isMelodic ? 60 : 36));
+      const chanSel = entry.win?.bodyEl?.querySelector('[data-role="pr-channel-select"]');
+      if (chanSel) chanSel.value = targetRowKey;
+      wm.setWindowTitle(
+        winId,
+        r ? `피아노 롤 (루프) · ${r.name} — ${clip.name || "Beat Clip"}` : `피아노 롤 (패턴 루프) · ${track.name} — ${clip.name || "Beat Clip"}`
+      );
+    } else if (centerMidi != null && entry.view) {
       entry.view.scrollToMidi(centerMidi);
     }
     return;
@@ -1341,7 +1351,14 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     (o) => `<option value="${o.value}" ${Number(o.step) === 0.5 ? "selected" : ""}>${o.label}</option>`
   ).join("");
 
-  const winTitle = isLoopMode
+  const drumRows = track.type === "drumkit" ? getTrackDrumRows(track) : [];
+  let currentTargetRowKey = targetRowKey;
+  let targetRow = currentTargetRowKey ? drumRows.find((r) => r.key === currentTargetRowKey) : null;
+  const accentColor = targetRow?.color || track.color || (isLoopMode ? "#f59e0b" : "#54a0ff");
+
+  const winTitle = targetRow
+    ? `피아노 롤 (루프) · ${targetRow.name} — ${clip.name || "Beat Clip"}`
+    : isLoopMode
     ? `피아노 롤 (패턴 루프) · ${track.name} — ${clip.name || "Beat Clip"}`
     : `피아노롤 · ${track.name} — ${clip.name || "MIDI Clip"}`;
 
@@ -1349,7 +1366,7 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     id: winId,
     title: winTitle,
     icon: "🎹",
-    accentColor: track.color || (isLoopMode ? "#f59e0b" : "#54a0ff"),
+    accentColor: accentColor,
     closable: true,
     width: 920,
     height: 520,
@@ -1385,6 +1402,14 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
           <button class="mini-btn active" data-role="pr-loop" type="button" title="피아노롤 반복 루프 재생 켜기/끄기">🔁 루프</button>
         </div>
         <input class="clip-name-input" data-role="clip-name" type="text" value="${escapeHtml(clip.name || (isLoopMode ? "Beat Clip" : "MIDI Clip"))}" title="클립 이름">
+        ${track.type === "drumkit" ? `
+        <label class="pr-label">채널
+          <select class="mini-select" data-role="pr-channel-select" title="편집할 채널/악기 선택 (다른 채널은 고스트 노트로 표시됩니다)">
+            <option value="">(전체 채널)</option>
+            ${drumRows.map((r) => `<option value="${r.key}" ${r.key === currentTargetRowKey ? "selected" : ""}>${r.isMelodic ? "🎹" : "🥁"} ${escapeHtml(r.name)}</option>`).join("")}
+          </select>
+        </label>
+        ` : ""}
         <label class="pr-label">박자 스냅
           <select class="mini-select" data-role="snap-select">${snapOptsHtml}</select>
         </label>
@@ -1429,7 +1454,7 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
     </div>
     <div class="pr-footer-hint">
       <span>💡 <b>상단 룰러 클릭</b>: 재생 위치 이동 · <b>Ctrl+C/V/D</b>: 복사/붙여넣기/복제 · <b>Shift+드래그</b>: 영역 선택 · <b>Del</b>: 삭제</span>
-      <span>${isLoopMode ? "🔁 <b>패턴 루프 모드</b>: 마디 루프 범위 안에서 멜로디 / 808 피치 노트가 반복 재생됩니다." : "노트 위 휠: 벨로시티(강약) · 우클릭: 삭제"}</span>
+      <span>${isLoopMode ? "🔁 <b>패턴 루프 모드</b>: 채널별 노트가 격자 위에서 반복 재생되며, 타 채널 노트는 고스트 노트(연한 회색)로 표시됩니다." : "노트 위 휠: 벨로시티(강약) · 우클릭: 삭제"}</span>
     </div>
   `;
 
@@ -1438,6 +1463,8 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
 
   const prView = new PianoRollView(canvasEl, scrollEl, {
     isLoopMode,
+    targetRowKey: currentTargetRowKey,
+    activeRowColor: targetRow?.color || null,
     getEditingContext: () => ({
       project,
       track: (project.tracks || []).find((t) => t.id === track.id),
@@ -1454,7 +1481,15 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
       if (bs) bs.renderGrid();
     },
     onAuditionNote: (trk, midi, dur = 0.22, vel = 0.85) => {
-      engine.previewTrackNote(trk, midi, dur, vel);
+      const curRowKey = prView.targetRowKey;
+      if (curRowKey && trk.type === "drumkit") {
+        const rows = getTrackDrumRows(trk);
+        const r = rows.find((x) => x.key === curRowKey) || trk;
+        const strip = engine.graph?.strips.get(trk.id);
+        triggerInstrumentVoice(engine.ctx, strip ? strip.input : engine.graph.masterBus, r, midi, engine.ctx.currentTime, dur, vel);
+      } else {
+        engine.previewTrackNote(trk, midi, dur, vel);
+      }
     },
     onSeekStep: (localStep) => {
       const c = (project.clips || []).find((x) => x.id === clip.id);
@@ -1532,7 +1567,21 @@ function openPianoRollWindow(track, clip, isLoopMode = false, centerMidi = null)
   }
 
   const nameInput = win.bodyEl.querySelector('[data-role="clip-name"]');
+  const chanSelect = win.bodyEl.querySelector('[data-role="pr-channel-select"]');
   const snapSelect = win.bodyEl.querySelector('[data-role="snap-select"]');
+
+  if (chanSelect) {
+    chanSelect.addEventListener("change", () => {
+      currentTargetRowKey = chanSelect.value || null;
+      const rows = getTrackDrumRows(track);
+      targetRow = currentTargetRowKey ? rows.find((x) => x.key === currentTargetRowKey) : null;
+      prView.setTargetRowKey(currentTargetRowKey, targetRow?.color || null, targetRow?.baseMidi || (targetRow?.isMelodic ? 60 : 36));
+      wm.setWindowTitle(
+        winId,
+        targetRow ? `피아노 롤 (루프) · ${targetRow.name} — ${clip.name || "Beat Clip"}` : `피아노 롤 (패턴 루프) · ${track.name} — ${clip.name || "Beat Clip"}`
+      );
+    });
+  }
   const drawBtn = win.bodyEl.querySelector('[data-role="tool-draw"]');
   const sliceBtn = win.bodyEl.querySelector('[data-role="tool-slice"]');
   const selectBtn = win.bodyEl.querySelector('[data-role="tool-select"]');
@@ -1811,6 +1860,11 @@ function openBeatSeqWindow(track, clip) {
       if (!Array.isArray(cl.drumSteps[dRow.key])) cl.drumSteps[dRow.key] = new Array(totalCols).fill(0);
       while (cl.drumSteps[dRow.key].length < totalCols) cl.drumSteps[dRow.key].push(0);
 
+      const rowNotes = (cl.notes || []).filter(
+        (n) => n.rowKey === dRow.key || (!n.rowKey && n.midi === (dRow.baseMidi || 36))
+      );
+      const isMelodic = Boolean(dRow.isMelodic || rowNotes.length > 0);
+
       const rowEl = document.createElement("div");
       rowEl.className = "drum-row";
       rowEl.style.setProperty("--row-color", dRow.color || "#ff5c5c");
@@ -1821,23 +1875,35 @@ function openBeatSeqWindow(track, clip) {
       const padBtn = document.createElement("button");
       padBtn.type = "button";
       padBtn.className = "drum-pad-btn";
-      padBtn.title = "클릭: 드럼 소리 미리듣기";
+      padBtn.title = "클릭: 소리 미리듣기";
       padBtn.innerHTML = `<span class="drum-dot" style="background:${dRow.color || "#ff5c5c"}"></span><span>${escapeHtml(dRow.name)}</span>`;
-      padBtn.addEventListener("click", () => engine.previewDrumRow(trk, dRow.key));
+      padBtn.addEventListener("click", () => {
+        if (dRow.isMelodic) {
+          const strip = engine.graph?.strips.get(trk.id);
+          triggerInstrumentVoice(engine.ctx, strip ? strip.input : engine.graph.masterBus, dRow, dRow.baseMidi || 60, engine.ctx.currentTime, 0.4, 0.9);
+        } else {
+          engine.previewDrumRow(trk, dRow.key);
+        }
+      });
 
       const prBtn = document.createElement("button");
       prBtn.type = "button";
-      prBtn.className = "mini-btn";
-      prBtn.title = `'${dRow.name}' 음정/멜로디/808 입력을 위한 루프 피아노 롤 열기`;
-      prBtn.textContent = "🎹";
+      prBtn.className = isMelodic ? "mini-btn active" : "mini-btn";
+      prBtn.title = `'${dRow.name}' 전용 피아노 롤 열기 (${rowNotes.length}개 노트 입력됨)`;
+      prBtn.innerHTML = rowNotes.length > 0 ? `🎹 ${rowNotes.length}` : "🎹";
+      if (isMelodic) {
+        prBtn.style.background = "linear-gradient(135deg, #f59e0b, #d97706)";
+        prBtn.style.color = "#ffffff";
+        prBtn.style.fontWeight = "800";
+      }
       prBtn.addEventListener("click", () => {
-        openPianoRollWindow(trk, cl, true, dRow.baseMidi || 36);
+        openPianoRollWindow(trk, cl, true, dRow.baseMidi || (dRow.isMelodic ? 60 : 36), dRow.key);
       });
 
       const loadSmpBtn = document.createElement("button");
       loadSmpBtn.type = "button";
       loadSmpBtn.className = "mini-btn";
-      loadSmpBtn.title = "이 드럼 패드에 외부 오디오 샘플(.wav/.mp3) 교체";
+      loadSmpBtn.title = "이 악기 채널에 외부 오디오 샘플(.wav/.mp3) 교체";
       loadSmpBtn.textContent = "📂";
       loadSmpBtn.addEventListener("click", () => {
         pendingFileAction = { mode: "drum_pad", trackId: trk.id, drumKey: dRow.key, clipId: cl.id };
@@ -1848,7 +1914,7 @@ function openBeatSeqWindow(track, clip) {
       const delBtn = document.createElement("button");
       delBtn.type = "button";
       delBtn.className = "mini-btn danger";
-      delBtn.title = `'${dRow.name}' 드럼 악기 행 삭제`;
+      delBtn.title = `'${dRow.name}' 채널 삭제`;
       delBtn.textContent = "✕";
       delBtn.addEventListener("click", () => {
         const isCustom = Array.isArray(trk.customDrumRows) && trk.customDrumRows.some((r) => r.key === dRow.key);
@@ -1861,10 +1927,16 @@ function openBeatSeqWindow(track, clip) {
         if (cl.drumSteps && cl.drumSteps[dRow.key]) {
           delete cl.drumSteps[dRow.key];
         }
+        if (Array.isArray(cl.notes)) {
+          cl.notes = cl.notes.filter((n) => n.rowKey !== dRow.key);
+        }
         persistLocal();
         renderGrid();
         arrangementView.draw();
-        showToast(`'${dRow.name}' 드럼 악기를 삭제했습니다.`);
+        for (const pr of openPianoRolls.values()) {
+          if (pr.clipId === cl.id) pr.view.draw();
+        }
+        showToast(`'${dRow.name}' 채널을 삭제했습니다.`);
       });
 
       headEl.appendChild(padBtn);
@@ -1879,18 +1951,57 @@ function openBeatSeqWindow(track, clip) {
       for (let i = 0; i < totalCols; i++) {
         const beatGroup = Math.floor(i / (4 * subdiv));
         const isSubHalf = subdiv === 2 && i % 2 === 1;
+        const noteAtStep = isMelodic
+          ? rowNotes.find((n) => Math.floor(n.start * subdiv) === i)
+          : null;
+        const isStepOn = Boolean(noteAtStep) || Boolean(cl.drumSteps[dRow.key][i]);
+
         const cell = document.createElement("button");
         cell.type = "button";
-        cell.className = `step-cell ${beatGroup % 2 === 1 ? "beat-alt" : ""} ${isSubHalf ? "sub-half" : ""} ${cl.drumSteps[dRow.key][i] ? "on" : ""}`;
+        cell.className = `step-cell ${beatGroup % 2 === 1 ? "beat-alt" : ""} ${isSubHalf ? "sub-half" : ""} ${isStepOn ? "on" : ""}`;
         cell.dataset.colIdx = String(i);
+        if (noteAtStep) {
+          cell.title = `스텝 ${i + 1}: ${midiToName(noteAtStep.midi)} (클릭: 삭제, 🎹 더블클릭: 피아노롤)`;
+        }
+
         cell.addEventListener("click", () => {
-          const next = cl.drumSteps[dRow.key][i] ? 0 : 0.88;
-          cl.drumSteps[dRow.key][i] = next;
-          cell.classList.toggle("on", Boolean(next));
-          if (next) engine.previewDrumRow(trk, dRow.key);
-          persistLocal();
-          arrangementView.draw();
+          if (isMelodic) {
+            if (noteAtStep) {
+              cl.notes = (cl.notes || []).filter((n) => n.id !== noteAtStep.id);
+            } else {
+              if (!Array.isArray(cl.notes)) cl.notes = [];
+              const startStep = i / subdiv;
+              cl.notes.push({
+                id: `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                midi: dRow.baseMidi || (dRow.isMelodic ? 60 : 36),
+                start: startStep,
+                length: 1 / subdiv,
+                velocity: 0.88,
+                rowKey: dRow.key,
+              });
+              const strip = engine.graph?.strips.get(trk.id);
+              triggerInstrumentVoice(engine.ctx, strip ? strip.input : engine.graph.masterBus, dRow, dRow.baseMidi || (dRow.isMelodic ? 60 : 36), engine.ctx.currentTime, 0.35, 0.88);
+            }
+            persistLocal();
+            renderGrid();
+            arrangementView.draw();
+            for (const pr of openPianoRolls.values()) {
+              if (pr.clipId === cl.id) pr.view.draw();
+            }
+          } else {
+            const next = cl.drumSteps[dRow.key][i] ? 0 : 0.88;
+            cl.drumSteps[dRow.key][i] = next;
+            cell.classList.toggle("on", Boolean(next));
+            if (next) engine.previewDrumRow(trk, dRow.key);
+            persistLocal();
+            arrangementView.draw();
+          }
         });
+
+        cell.addEventListener("dblclick", () => {
+          openPianoRollWindow(trk, cl, true, dRow.baseMidi || (dRow.isMelodic ? 60 : 36), dRow.key);
+        });
+
         cellsEl.appendChild(cell);
       }
 
@@ -1904,105 +2015,120 @@ function openBeatSeqWindow(track, clip) {
     const trk = (project.tracks || []).find((t) => t.id === track.id);
     if (!trk) return;
 
-    // Group available sounds by category
-    const categories = {};
-    for (const s of AVAILABLE_DRUM_SOUNDS) {
-      if (!categories[s.category]) categories[s.category] = [];
-      categories[s.category].push(s);
-    }
+    let activeTab = "melodic";
 
     const overlay = document.createElement("div");
     overlay.className = "drum-picker-overlay";
 
-    let catsHtml = "";
-    for (const [cat, list] of Object.entries(categories)) {
-      const itemsHtml = list
-        .map(
-          (snd) => `
-            <div class="drum-sound-card">
-              <div class="drum-sound-info">
-                <span class="drum-dot" style="background:${snd.color};"></span>
-                <strong>${escapeHtml(snd.name)}</strong>
-              </div>
-              <div class="drum-sound-actions">
-                <button type="button" class="mini-btn" data-preview-snd="${snd.id}">▶ 듣기</button>
-                <button type="button" class="mini-btn accent" data-add-snd="${snd.id}">＋ 추가</button>
-              </div>
-            </div>
-          `
-        )
-        .join("");
+    const renderModalBody = () => {
+      const isMelodicTab = activeTab === "melodic";
+      const soundList = isMelodicTab ? AVAILABLE_MELODIC_INSTRUMENTS : AVAILABLE_DRUM_SOUNDS;
 
-      catsHtml += `
-        <div class="drum-cat-section">
-          <div class="drum-cat-title">${escapeHtml(cat.toUpperCase())}</div>
-          <div class="drum-sound-grid">${itemsHtml}</div>
+      const categories = {};
+      for (const s of soundList) {
+        if (!categories[s.category]) categories[s.category] = [];
+        categories[s.category].push(s);
+      }
+
+      let catsHtml = "";
+      for (const [cat, list] of Object.entries(categories)) {
+        const itemsHtml = list
+          .map(
+            (snd) => `
+              <div class="drum-sound-card">
+                <div class="drum-sound-info">
+                  <span class="drum-dot" style="background:${snd.color};"></span>
+                  <strong>${snd.isMelodic ? "🎹 " : ""}${escapeHtml(snd.name)}</strong>
+                </div>
+                <div class="drum-sound-actions">
+                  <button type="button" class="mini-btn" data-preview-snd="${snd.id}">▶ 듣기</button>
+                  <button type="button" class="mini-btn accent" data-add-snd="${snd.id}">＋ 추가</button>
+                </div>
+              </div>
+            `
+          )
+          .join("");
+
+        catsHtml += `
+          <div class="drum-cat-section">
+            <div class="drum-cat-title">${escapeHtml(cat.toUpperCase())}</div>
+            <div class="drum-sound-grid">${itemsHtml}</div>
+          </div>
+        `;
+      }
+
+      overlay.innerHTML = `
+        <div class="drum-picker-card">
+          <div class="drum-picker-header">
+            <h4>${isMelodicTab ? "🎹 가상 악기 & 808 베이스 채널 추가" : "🥁 드럼 악기 / 사운드 채널 추가"}</h4>
+            <button type="button" class="mini-btn" data-close-picker>✕</button>
+          </div>
+          <div class="drum-picker-tabs">
+            <button type="button" class="drum-picker-tab-btn ${isMelodicTab ? "active" : ""}" data-tab="melodic">🎹 가상 악기 & 808 베이스 (${AVAILABLE_MELODIC_INSTRUMENTS.length})</button>
+            <button type="button" class="drum-picker-tab-btn ${!isMelodicTab ? "active" : ""}" data-tab="drums">🥁 드럼 & 퍼커션 (${AVAILABLE_DRUM_SOUNDS.length})</button>
+          </div>
+          <div class="drum-picker-body">
+            <button type="button" class="ext-drop-btn" data-role="pick-custom-sample" style="border-color:rgba(84,160,255,0.6);color:#cfe5ff;padding:8px 12px;">
+              📂 내 컴퓨터 오디오 샘플(.wav / .mp3) 파일로 악기 추가
+            </button>
+            ${catsHtml}
+          </div>
         </div>
       `;
-    }
 
-    overlay.innerHTML = `
-      <div class="drum-picker-card">
-        <div class="drum-picker-header">
-          <h4>🥁 드럼 악기 / 사운드 추가</h4>
-          <button type="button" class="mini-btn" data-close-picker>✕</button>
-        </div>
-        <div class="drum-picker-body">
-          <button type="button" class="ext-drop-btn" data-role="pick-custom-sample" style="border-color:rgba(84,160,255,0.6);color:#cfe5ff;padding:8px 12px;">
-            📂 내 컴퓨터 오디오 샘플(.wav / .mp3) 파일로 악기 추가
-          </button>
-          ${catsHtml}
-        </div>
-      </div>
-    `;
+      overlay.querySelector("[data-close-picker]").addEventListener("click", () => overlay.remove());
+      overlay.querySelectorAll("[data-tab]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          activeTab = btn.dataset.tab;
+          renderModalBody();
+        });
+      });
+      overlay.querySelector('[data-role="pick-custom-sample"]').addEventListener("click", () => {
+        pendingFileAction = { mode: "add_drum_pad", trackId: trk.id, clipId: clip.id };
+        externalInstFileInput.value = "";
+        externalInstFileInput.click();
+        overlay.remove();
+      });
+      overlay.querySelectorAll("[data-preview-snd]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const snd = soundList.find((s) => s.id === btn.dataset.previewSnd);
+          if (snd) engine.previewDrumSpec(trk, snd);
+        });
+      });
+      overlay.querySelectorAll("[data-add-snd]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const snd = soundList.find((s) => s.id === btn.dataset.addSnd);
+          if (!snd) return;
 
-    overlay.querySelector("[data-close-picker]").addEventListener("click", () => overlay.remove());
+          if (Array.isArray(trk.hiddenDrumKeys) && trk.hiddenDrumKeys.includes(snd.id)) {
+            trk.hiddenDrumKeys = trk.hiddenDrumKeys.filter((k) => k !== snd.id);
+          } else {
+            if (!Array.isArray(trk.customDrumRows)) trk.customDrumRows = [];
+            const key = `${snd.id}_${Date.now().toString(36).slice(-4)}`;
+            trk.customDrumRows.push({
+              key,
+              name: snd.name,
+              color: snd.color,
+              engine: snd.engine,
+              baseMidi: snd.baseMidi || (snd.isMelodic ? 60 : 36),
+              isMelodic: Boolean(snd.isMelodic),
+              category: snd.category,
+              synth: { ...(snd.synth || {}) },
+            });
+          }
+          persistLocal();
+          renderGrid();
+          overlay.remove();
+          engine.previewDrumSpec(trk, snd);
+          showToast(`'${snd.name}' 악기가 비트 시퀀서에 추가되었습니다!`);
+        });
+      });
+    };
+
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) overlay.remove();
     });
-
-    overlay.querySelector('[data-role="pick-custom-sample"]').addEventListener("click", () => {
-      pendingFileAction = { mode: "add_drum_pad", trackId: trk.id, clipId: clip.id };
-      externalInstFileInput.value = "";
-      externalInstFileInput.click();
-      overlay.remove();
-    });
-
-    overlay.querySelectorAll("[data-preview-snd]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const snd = AVAILABLE_DRUM_SOUNDS.find((s) => s.id === btn.dataset.previewSnd);
-        if (snd) engine.previewDrumSpec(trk, snd);
-      });
-    });
-
-    overlay.querySelectorAll("[data-add-snd]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const snd = AVAILABLE_DRUM_SOUNDS.find((s) => s.id === btn.dataset.addSnd);
-        if (!snd) return;
-
-        // If it was a default row that was hidden, unhide it!
-        if (Array.isArray(trk.hiddenDrumKeys) && trk.hiddenDrumKeys.includes(snd.id)) {
-          trk.hiddenDrumKeys = trk.hiddenDrumKeys.filter((k) => k !== snd.id);
-        } else {
-          if (!Array.isArray(trk.customDrumRows)) trk.customDrumRows = [];
-          const key = `${snd.id}_${Date.now().toString(36).slice(-4)}`;
-          trk.customDrumRows.push({
-            key,
-            name: snd.name,
-            color: snd.color,
-            engine: snd.engine,
-            baseMidi: snd.baseMidi,
-            synth: { ...(snd.synth || {}) },
-          });
-        }
-        persistLocal();
-        renderGrid();
-        overlay.remove();
-        engine.previewDrumSpec(trk, snd);
-        showToast(`'${snd.name}' 드럼 악기가 추가되었습니다!`);
-      });
-    });
-
+    renderModalBody();
     win.bodyEl.appendChild(overlay);
   };
 

@@ -29,7 +29,7 @@ export const SNAP_OPTIONS = [
 export let noteClipboard = null;
 
 export class PianoRollView {
-  constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote, onSeekStep, isLoopMode = false }) {
+  constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote, onSeekStep, isLoopMode = false, targetRowKey = null, activeRowColor = null }) {
     this.canvas = canvas;
     this.container = container;
     this.ctx = canvas.getContext("2d");
@@ -38,6 +38,8 @@ export class PianoRollView {
     this.onAuditionNote = onAuditionNote;
     this.onSeekStep = onSeekStep;
     this.isLoopMode = Boolean(isLoopMode);
+    this.targetRowKey = targetRowKey;
+    this.activeRowColor = activeRowColor;
 
     this.snapStep = 0.5; // Default to 1/32 (반박 쪼개기 가능!) right out of the box
     this.tool = "draw";  // "draw" | "slice" | "select"
@@ -51,6 +53,16 @@ export class PianoRollView {
     this._onMouseMove = (e) => this.handleMouseMove(e);
     this._onMouseUp = () => this.handleMouseUp();
     this.bindEvents();
+  }
+
+  setTargetRowKey(key, color = null, centerMidi = null) {
+    this.targetRowKey = key;
+    if (color) this.activeRowColor = color;
+    this.selectedNoteIds.clear();
+    if (centerMidi != null) {
+      this.scrollToMidi(centerMidi);
+    }
+    this.draw();
   }
 
   get selectedNoteId() {
@@ -193,7 +205,8 @@ export class PianoRollView {
   selectAllNotes() {
     const ctxData = this.getEditingContext();
     if (!ctxData?.clip?.notes?.length) return 0;
-    this.selectedNoteIds = new Set(ctxData.clip.notes.map((n) => n.id));
+    const filter = this.targetRowKey ? ctxData.clip.notes.filter((n) => n.rowKey === this.targetRowKey) : ctxData.clip.notes;
+    this.selectedNoteIds = new Set(filter.map((n) => n.id));
     this.draw();
     return this.selectedNoteIds.size;
   }
@@ -483,7 +496,10 @@ export class PianoRollView {
         return;
       }
 
-      const hit = this.findNoteAt(clip.notes, pos.rawStep, pos.midi);
+      let hit = this.findNoteAt(clip.notes, pos.rawStep, pos.midi);
+      if (this.targetRowKey && hit && hit.rowKey && hit.rowKey !== this.targetRowKey) {
+        hit = null;
+      }
 
       // Right-click or Alt+Click: delete note
       if (e.button === 2 || e.altKey) {
@@ -582,6 +598,9 @@ export class PianoRollView {
           length: Math.round(initLen * 10000) / 10000,
           velocity: 0.85,
         };
+        if (this.targetRowKey) {
+          newNote.rowKey = this.targetRowKey;
+        }
         clip.notes.push(newNote);
         this.selectedNoteIds.add(newNote.id);
         this.onAuditionNote(track, pos.midi, 0.2, 0.85);
@@ -841,7 +860,7 @@ export class PianoRollView {
     }
 
     // Notes (culled to visible horizontal step window)
-    const baseColor = track.color || "#ff6bcb";
+    const baseColor = this.activeRowColor || track.color || "#ff6bcb";
     for (const n of notes) {
       if (n.midi < MIN_MIDI || n.midi > MAX_MIDI) continue;
       if (n.start + n.length < viewStartStep - 1 || n.start > viewEndStep + 1) continue;
@@ -852,6 +871,20 @@ export class PianoRollView {
       const nh = ROW_HEIGHT - 3;
       const isSelected = this.selectedNoteIds.has(n.id);
       const vel = Math.max(0.15, Math.min(1, n.velocity ?? 0.84));
+
+      const isGhost = Boolean(this.targetRowKey && n.rowKey && n.rowKey !== this.targetRowKey);
+      if (isGhost) {
+        ctx.save();
+        ctx.fillStyle = "rgba(148, 163, 184, 0.16)";
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.4)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(nx, ny, nw, nh, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
 
       ctx.save();
       ctx.globalAlpha = 0.45 + vel * 0.55;

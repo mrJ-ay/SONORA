@@ -101,14 +101,24 @@ export class PianoRollView {
     const containerWidth = this.container.clientWidth || 800;
     const scrollLeft = this.container.scrollLeft || 0;
 
-    // 무제한 캔버스: 기본 최소 128마디 (2048스텝)
-    // 스크롤 위치 및 노트 위치에 따라 우측으로 항상 16마디(256스텝) 이상 끊임없이 자동 무한 확장!
+    // 무제한 캔버스: 클립 기본 길이(최소 64스텝/4마디)에서 시작하여, 스크롤하거나 노트를 추가할 때 항상 32스텝씩 앞서 부드럽게 자동 확장
+    const clipBars = Math.max(2, Math.ceil(Number(clip?.lengthBars) || 2));
+    const baseClipSteps = clipBars * 16;
     const visibleEndStep = Math.ceil((scrollLeft + containerWidth - KEY_WIDTH) / stepWidth);
-    const noteEndStep = Math.ceil((maxNoteEnd + 64) / 16) * 16;
-    const steps = Math.max(2048, visibleEndStep + 256, noteEndStep);
+    const noteEndStep = Math.ceil((maxNoteEnd + 16) / 16) * 16;
+    const steps = Math.max(baseClipSteps, 64, Math.ceil((visibleEndStep + 32) / 16) * 16, noteEndStep);
     const width = KEY_WIDTH + steps * stepWidth;
     const height = HEADER_HEIGHT + TOTAL_KEYS * ROW_HEIGHT;
     return { width, height, steps, stepWidth };
+  }
+
+  requestDraw() {
+    if (this._rafPending || this.destroyed) return;
+    this._rafPending = true;
+    requestAnimationFrame(() => {
+      this._rafPending = false;
+      this.draw();
+    });
   }
 
   resizeAndDraw() {
@@ -402,7 +412,7 @@ export class PianoRollView {
       }
       this.dragState.note.start = Math.round(nextStart * 10000) / 10000;
       this.dragState.note.midi = nextMidi;
-      this.draw();
+      this.requestDraw();
     } else if (this.dragState.mode === "resize-right" || this.dragState.mode === "create-drag") {
       const endSnapped = this.quantize(pos.rawStep, e.shiftKey, "round");
       const rawDiff = pos.rawStep - this.dragState.note.start;
@@ -414,7 +424,7 @@ export class PianoRollView {
       );
       this.dragState.note.length = Math.round(nextLen * 10000) / 10000;
       this.defaultNoteLen = this.dragState.note.length;
-      this.draw();
+      this.requestDraw();
     } else if (this.dragState.mode === "resize-left") {
       const newStart = Math.max(
         0,
@@ -422,7 +432,7 @@ export class PianoRollView {
       );
       this.dragState.note.start = Math.round(newStart * 10000) / 10000;
       this.dragState.note.length = Math.round((this.dragState.endStepFixed - newStart) * 10000) / 10000;
-      this.draw();
+      this.requestDraw();
     }
   }
 
@@ -441,7 +451,7 @@ export class PianoRollView {
     if (this.playheadStep !== step) {
       this.playheadStep = step;
       if (!this.destroyed && this.canvas.offsetParent !== null) {
-        this.draw();
+        this.requestDraw();
       }
     }
   }
@@ -469,10 +479,21 @@ export class PianoRollView {
     ctx.fillStyle = "#10141d";
     ctx.fillRect(0, 0, width, height);
 
+    const scrollLeft = this.container.scrollLeft || 0;
+    const scrollTop = this.container.scrollTop || 0;
+    const viewW = this.container.clientWidth || 800;
+    const viewH = this.container.clientHeight || 500;
+
+    const viewStartRow = Math.max(0, Math.floor((scrollTop - HEADER_HEIGHT - ROW_HEIGHT) / ROW_HEIGHT));
+    const viewEndRow = Math.min(TOTAL_KEYS, Math.ceil((scrollTop + viewH - HEADER_HEIGHT + ROW_HEIGHT) / ROW_HEIGHT));
+
+    const viewStartStep = Math.max(0, Math.floor((scrollLeft - KEY_WIDTH - stepWidth) / stepWidth));
+    const viewEndStep = Math.min(steps, Math.ceil((scrollLeft + viewW - KEY_WIDTH + stepWidth) / stepWidth));
+
     const scaleSet = SCALES[project.scale || "minor"] || SCALES.chromatic;
 
-    // Rows
-    for (let r = 0; r < TOTAL_KEYS; r++) {
+    // Rows (culled to visible vertical viewport)
+    for (let r = viewStartRow; r < viewEndRow; r++) {
       const midi = MAX_MIDI - r;
       const y = HEADER_HEIGHT + r * ROW_HEIGHT;
       const pc = midi % 12;
@@ -494,13 +515,14 @@ export class PianoRollView {
     ctx.fillStyle = "#0b0e15";
     ctx.fillRect(0, 0, width, HEADER_HEIGHT);
 
-    // Sub-step vertical grid lines (반박 1/32, 1/64, 셋잇단 등 시각 가이드!)
+    // Sub-step vertical grid lines (culled to visible horizontal viewport)
     if (this.snapStep > 0 && this.snapStep < 1) {
       const subWidth = this.snapStep * stepWidth;
       if (subWidth >= 6) {
         ctx.strokeStyle = "rgba(84, 160, 255, 0.13)";
         ctx.lineWidth = 1;
-        for (let pos = this.snapStep; pos < steps; pos += this.snapStep) {
+        const startSub = Math.max(this.snapStep, Math.floor(viewStartStep / this.snapStep) * this.snapStep);
+        for (let pos = startSub; pos <= viewEndStep; pos += this.snapStep) {
           if (Math.abs(pos - Math.round(pos)) < 0.01) continue;
           const x = KEY_WIDTH + pos * stepWidth;
           ctx.beginPath();
@@ -511,8 +533,8 @@ export class PianoRollView {
       }
     }
 
-    // Main 16th / Beat / Bar grid lines
-    for (let s = 0; s <= steps; s++) {
+    // Main 16th / Beat / Bar grid lines (culled to visible horizontal viewport)
+    for (let s = viewStartStep; s <= viewEndStep; s++) {
       const x = KEY_WIDTH + s * stepWidth;
       const isBeat = s % 4 === 0;
       const isBar = s % 16 === 0;
@@ -536,10 +558,11 @@ export class PianoRollView {
       }
     }
 
-    // Notes
+    // Notes (culled to visible horizontal step window)
     const baseColor = track.color || "#ff6bcb";
     for (const n of notes) {
       if (n.midi < MIN_MIDI || n.midi > MAX_MIDI) continue;
+      if (n.start + n.length < viewStartStep - 1 || n.start > viewEndStep + 1) continue;
       const r = MAX_MIDI - n.midi;
       const nx = KEY_WIDTH + n.start * stepWidth + 0.5;
       const ny = HEADER_HEIGHT + r * ROW_HEIGHT + 1.5;
@@ -644,9 +667,8 @@ export class PianoRollView {
       }
     }
 
-    // Sticky Piano Keys column on left (tracks horizontal scroll!)
-    const scrollLeft = this.container.scrollLeft || 0;
-    for (let r = 0; r < TOTAL_KEYS; r++) {
+    // Sticky Piano Keys column on left (culled to visible vertical viewport)
+    for (let r = viewStartRow; r < viewEndRow; r++) {
       const midi = MAX_MIDI - r;
       const y = HEADER_HEIGHT + r * ROW_HEIGHT;
       const pc = midi % 12;

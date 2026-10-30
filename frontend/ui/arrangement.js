@@ -19,10 +19,11 @@ export class ArrangementView {
     this.onSeekBar = onSeekBar;
 
     this.barWidth = BAR_WIDTH;
-    this.totalBars = 256;
+    this.totalBars = 96;
     this.playheadGlobalStep = 0;
     this.liveRecording = null; // { trackId, startBar }
     this.dragState = null;
+    this._rafPending = false;
 
     this.bindEvents();
     window.addEventListener("resize", () => this.resizeAndDraw());
@@ -50,14 +51,23 @@ export class ArrangementView {
     }
 
     const visibleEndBar = Math.ceil((scrollLeft + containerW) / barW);
-    // Initial minimum 256 bars, or expand dynamically beyond visible viewport + 64 bars, or clipEnd + 64 bars!
-    const bars = Math.max(256, this.totalBars || 256, visibleEndBar + 64, maxClipEnd + 64);
+    // 넉넉한 96마디부터 시작하여, 스크롤하거나 클립이 우측으로 늘어나면 항상 32마디 앞서 무한 자동 확장
+    const bars = Math.max(96, this.totalBars || 96, visibleEndBar + 32, maxClipEnd + 32);
     this.totalBars = bars;
 
     const width = Math.max(containerW, bars * barW);
     const height = Math.max(RULER_HEIGHT + Math.max(tracks.length, 1) * TRACK_ROW_HEIGHT, this.container ? (this.container.clientHeight || 260) : 260);
 
     return { width, height, bars, barW, trackCount: tracks.length };
+  }
+
+  requestDraw() {
+    if (this._rafPending) return;
+    this._rafPending = true;
+    requestAnimationFrame(() => {
+      this._rafPending = false;
+      this.draw();
+    });
   }
 
   resizeAndDraw() {
@@ -114,11 +124,11 @@ export class ArrangementView {
         const scrollLeft = this.container.scrollLeft || 0;
         const containerW = this.container.clientWidth || 800;
         const visibleEndBar = Math.ceil((scrollLeft + containerW) / barW);
-        if (visibleEndBar + 40 >= this.totalBars) {
-          this.totalBars = Math.max(this.totalBars + 64, visibleEndBar + 96);
+        if (visibleEndBar + 24 >= this.totalBars) {
+          this.totalBars = Math.max(this.totalBars + 32, visibleEndBar + 48);
           this.resizeAndDraw();
         } else {
-          this.draw();
+          this.requestDraw();
         }
       });
     }
@@ -276,7 +286,7 @@ export class ArrangementView {
             }
           }
         }
-        this.draw();
+        this.requestDraw();
       } else if (this.dragState.mode === "resize") {
         const rawEnd = pos.x / pos.barW;
         if (isAudio) {
@@ -286,7 +296,7 @@ export class ArrangementView {
           const endBar = Math.round(rawEnd);
           clip.lengthBars = Math.max(1, endBar - clip.bar);
         }
-        this.draw();
+        this.requestDraw();
       }
     });
 
@@ -304,10 +314,10 @@ export class ArrangementView {
       this.playheadGlobalStep = globalStep;
       const currentBar = Math.ceil(globalStep / 16);
       if (currentBar + 16 > this.totalBars) {
-        this.totalBars = Math.max(this.totalBars + 64, currentBar + 64);
+        this.totalBars = Math.max(this.totalBars + 32, currentBar + 32);
         this.resizeAndDraw();
       } else {
-        this.draw();
+        this.requestDraw();
       }
     }
   }
@@ -327,7 +337,9 @@ export class ArrangementView {
     const ctx = this.ctx;
 
     const scrollLeft = this.container ? (this.container.scrollLeft || 0) : 0;
+    const scrollTop = this.container ? (this.container.scrollTop || 0) : 0;
     const containerW = this.container ? (this.container.clientWidth || 800) : 800;
+    const containerH = this.container ? (this.container.clientHeight || 260) : 260;
     const viewStartBar = Math.max(0, Math.floor((scrollLeft - barW) / barW));
     const viewEndBar = Math.min(bars, Math.ceil((scrollLeft + containerW + barW) / barW));
 
@@ -335,20 +347,21 @@ export class ArrangementView {
     ctx.scale(dpr, dpr);
 
     ctx.fillStyle = "#10141d";
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(scrollLeft, 0, containerW + 16, height);
 
-    // Track lane backgrounds
+    // Track lane backgrounds (culled to visible slice)
     tracks.forEach((trk, idx) => {
       const y = RULER_HEIGHT + idx * TRACK_ROW_HEIGHT;
+      if (y + TRACK_ROW_HEIGHT < scrollTop - 20 || y > scrollTop + containerH + 20) return;
       const isSel = trk.id === project.selectedTrackId;
       ctx.fillStyle = isSel ? "#182030" : idx % 2 === 0 ? "#131924" : "#10151f";
-      ctx.fillRect(0, y, width, TRACK_ROW_HEIGHT);
+      ctx.fillRect(scrollLeft, y, containerW + 16, TRACK_ROW_HEIGHT);
 
       ctx.strokeStyle = "#222c3f";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(0, y + TRACK_ROW_HEIGHT);
-      ctx.lineTo(width, y + TRACK_ROW_HEIGHT);
+      ctx.moveTo(scrollLeft, y + TRACK_ROW_HEIGHT);
+      ctx.lineTo(scrollLeft + containerW + 16, y + TRACK_ROW_HEIGHT);
       ctx.stroke();
 
       // Subtle hint on empty Audio Track
@@ -357,7 +370,7 @@ export class ArrangementView {
         if (!hasClip && (!this.liveRecording || this.liveRecording.trackId !== trk.id)) {
           ctx.fillStyle = "rgba(56, 189, 248, 0.48)";
           ctx.font = "600 11px Pretendard, system-ui, sans-serif";
-          ctx.fillText("🎙️ [● 녹음] 버튼을 눌러 마이크·악기를 녹음하거나, 더블클릭 / 오디오 파일 드래그 앤 드롭으로 추가하세요", 14, y + 36);
+          ctx.fillText("🎙️ [● 녹음] 버튼을 눌러 마이크·악기를 녹음하거나, 더블클릭 / 오디오 파일 드래그 앤 드롭으로 추가하세요", scrollLeft + 14, y + 36);
         }
       }
     });
@@ -366,12 +379,12 @@ export class ArrangementView {
     if (!tracks.length) {
       ctx.fillStyle = "#64748b";
       ctx.font = "700 13px Pretendard, system-ui, sans-serif";
-      ctx.fillText("좌측 상단의 '+ 트랙 추가' 버튼을 눌러 트랙을 추가하세요.", 24, 70);
+      ctx.fillText("좌측 상단의 '+ 트랙 추가' 버튼을 눌러 트랙을 추가하세요.", scrollLeft + 24, 70);
     }
 
     // Bar Ruler & Grid lines (optimized for visible range)
     ctx.fillStyle = "#0b0e15";
-    ctx.fillRect(0, 0, width, RULER_HEIGHT);
+    ctx.fillRect(scrollLeft, 0, containerW + 16, RULER_HEIGHT);
 
     for (let b = viewStartBar; b <= viewEndBar; b++) {
       const x = b * barW;
@@ -390,8 +403,11 @@ export class ArrangementView {
       }
     }
 
-    // Draw Clips
+    // Draw Clips (culled to visible bar range)
     for (const clip of project.clips || []) {
+      const clipStart = Number(clip.bar) || 0;
+      const clipEnd = clipStart + (Number(clip.lengthBars) || 1);
+      if (clipEnd < viewStartBar - 1 || clipStart > viewEndBar + 1) continue;
       const tIdx = tracks.findIndex((t) => t.id === clip.trackId);
       if (tIdx < 0) continue;
       const track = tracks[tIdx];
@@ -536,33 +552,35 @@ export class ArrangementView {
       }
     }
 
-    // Playhead (Vertical scrubber indicator)
+    // Playhead (Vertical scrubber indicator - culled to visible screen)
     if (this.playheadGlobalStep >= 0) {
       const px = (this.playheadGlobalStep / 16) * barW;
-      // Semi-transparent glowing column
-      ctx.fillStyle = "rgba(245, 158, 11, 0.16)";
-      ctx.fillRect(px - 2, 0, 4, height);
+      if (px >= scrollLeft - 16 && px <= scrollLeft + containerW + 16) {
+        // Semi-transparent glowing column
+        ctx.fillStyle = "rgba(245, 158, 11, 0.16)";
+        ctx.fillRect(px - 2, 0, 4, height);
 
-      // Playhead vertical line
-      ctx.strokeStyle = "#fbbf24";
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(px, 0);
-      ctx.lineTo(px, height);
-      ctx.stroke();
+        // Playhead vertical line
+        ctx.strokeStyle = "#fbbf24";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, height);
+        ctx.stroke();
 
-      // Top badge / Scrubber head on ruler
-      ctx.fillStyle = "#f59e0b";
-      ctx.beginPath();
-      ctx.roundRect(px - 8, 0, 16, 14, 2);
-      ctx.fill();
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.moveTo(px - 6, 14);
-      ctx.lineTo(px + 6, 14);
-      ctx.lineTo(px, 20);
-      ctx.closePath();
-      ctx.fill();
+        // Top badge / Scrubber head on ruler
+        ctx.fillStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.roundRect(px - 8, 0, 16, 14, 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.moveTo(px - 6, 14);
+        ctx.lineTo(px + 6, 14);
+        ctx.lineTo(px, 20);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
 
     ctx.restore();

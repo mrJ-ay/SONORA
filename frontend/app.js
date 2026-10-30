@@ -1,4 +1,4 @@
-import { DRUM_ROWS, INSTRUMENT_PRESETS, midiToName } from "./audio/instruments.js";
+import { DRUM_ROWS, INSTRUMENT_PRESETS, AVAILABLE_DRUM_SOUNDS, midiToName } from "./audio/instruments.js";
 import { SonoraEngine, exportProjectToWav, getTrackDrumRows } from "./audio/engine.js";
 import {
   importExternalInstrumentFile,
@@ -127,19 +127,18 @@ const engine = new SonoraEngine(
     playBtn.classList.toggle("playing", isPlaying);
     playBtn.textContent = isPlaying ? "⏸ PAUSE" : "▶ PLAY";
 
-    arrangementView.setPlayhead(isPlaying ? globalStep : -1);
+    arrangementView.setPlayhead(globalStep >= 0 ? globalStep : 0);
 
     // Update playheads in ALL open Piano Roll windows simultaneously!
     for (const [clipId, prEntry] of openPianoRolls.entries()) {
       const clip = (project.clips || []).find((c) => c.id === clipId);
-      if (!clip || !isPlaying) {
+      if (!clip) {
         prEntry.view.setPlayhead(-1);
         continue;
       }
       const clipStart = (clip.bar || 0) * 16;
-      const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
-      if (globalStep >= clipStart && globalStep < clipEnd) {
-        const localStep = (globalStep - clipStart) % ((clip.patternBars || 1) * 16);
+      if (globalStep >= clipStart) {
+        const localStep = globalStep - clipStart;
         prEntry.view.setPlayhead(localStep);
       } else {
         prEntry.view.setPlayhead(-1);
@@ -205,14 +204,13 @@ arrangementWrap.addEventListener("scroll", () => {
   trackHeadersList.scrollTop = arrangementWrap.scrollTop;
 });
 
+const zoomOutArrBtn = document.getElementById("zoomOutArrangementBtn");
+const zoomInArrBtn = document.getElementById("zoomInArrangementBtn");
+if (zoomOutArrBtn) zoomOutArrBtn.addEventListener("click", () => arrangementView.zoomOut());
+if (zoomInArrBtn) zoomInArrBtn.addEventListener("click", () => arrangementView.zoomIn());
+
 function syncLoopButtons() {
   for (const bs of openBeatSeqs.values()) bs.syncLoopBtn();
-  document.querySelectorAll("[data-pr-loop-clip]").forEach((btn) => {
-    const cid = btn.dataset.prLoopClip;
-    const isLoop = engine.loopClipId === cid;
-    btn.classList.toggle("active", isLoop);
-    btn.textContent = isLoop ? "🔁 이 클립만 루프 중 (해제)" : "🔁 이 클립만 루프 재생";
-  });
 }
 
 function cleanupOrphanClipWindows() {
@@ -833,9 +831,9 @@ function openAudioClipWindow(track, clip) {
     accentColor: track.color || "#38bdf8",
     closable: true,
     width: 600,
-    height: 410,
+    height: 440,
     minWidth: 440,
-    minHeight: 320,
+    minHeight: 340,
     onClose: () => {
       openAudioClips.delete(clip.id);
     },
@@ -848,6 +846,7 @@ function openAudioClipWindow(track, clip) {
 
     const entry = getSampleEntry(c.sampleId);
     const totalDur = entry?.duration || 4.0;
+    const cutDur = Math.max(0, totalDur - (Number(c.offsetSec) || 0) - (Number(c.endTrimSec) || 0));
     wm.setWindowTitle(winId, `오디오 클립 편집 · ${t.name} — ${c.name || "Audio Clip"}`);
 
     win.bodyEl.innerHTML = `
@@ -862,8 +861,8 @@ function openAudioClipWindow(track, clip) {
         </div>
 
         <div class="waveform-box">
-          <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--muted);">
-            <span>원본 길이: <strong style="color:var(--cyan)">${totalDur.toFixed(2)}초</strong> ${entry ? `· ${entry.sampleRate}Hz` : ""}</span>
+          <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--muted);flex-wrap:wrap;gap:4px;">
+            <span>원본 길이: <strong style="color:var(--cyan)">${totalDur.toFixed(2)}초</strong> ${entry ? `· ${entry.sampleRate}Hz` : ""} · 자른 후 길이: <strong style="color:#a8ff78;" data-lbl="cutDur">${cutDur.toFixed(2)}초</strong></span>
             <span>시작 마디: <strong>${(Number(c.bar) + 1).toFixed(2)} 마디</strong> · 재생 길이: <strong data-lbl="lengthBars">${Number(c.lengthBars || 1).toFixed(2)} 마디</strong></span>
           </div>
           <canvas class="waveform-canvas" data-role="ac-wave" width="540" height="92" style="height:92px;"></canvas>
@@ -883,16 +882,19 @@ function openAudioClipWindow(track, clip) {
             <input type="range" min="0" max="${Math.max(0.1, (totalDur - 0.05)).toFixed(2)}" step="0.01" value="${c.offsetSec ?? 0}" data-ac-param="offsetSec">
           </label>
           <label class="synth-field">
+            <span>뒷부분 자르기 (End Trim) <strong data-lbl="endTrimSec">${Number(c.endTrimSec ?? 0).toFixed(2)}s</strong></span>
+            <input type="range" min="0" max="${Math.max(0.1, (totalDur - 0.05)).toFixed(2)}" step="0.01" value="${c.endTrimSec ?? 0}" data-ac-param="endTrimSec">
+          </label>
+          <label class="synth-field">
             <span>클립 길이 (마디) <strong data-lbl="lenSlider">${Number(c.lengthBars ?? 1).toFixed(2)} 마디</strong></span>
             <input type="range" min="0.2" max="32" step="0.05" value="${c.lengthBars ?? 1}" data-ac-param="lengthBars">
           </label>
           <label class="synth-field">
-            <span>페이드 인 (Fade In) <strong data-lbl="fadeInSec">${Number(c.fadeInSec ?? 0.01).toFixed(2)}s</strong></span>
-            <input type="range" min="0.005" max="2.0" step="0.01" value="${c.fadeInSec ?? 0.01}" data-ac-param="fadeInSec">
-          </label>
-          <label class="synth-field">
-            <span>페이드 아웃 (Fade Out) <strong data-lbl="fadeOutSec">${Number(c.fadeOutSec ?? 0.02).toFixed(2)}s</strong></span>
-            <input type="range" min="0.005" max="2.0" step="0.01" value="${c.fadeOutSec ?? 0.02}" data-ac-param="fadeOutSec">
+            <span>페이드 인 / 아웃 <strong data-lbl="fades">${Number(c.fadeInSec ?? 0.01).toFixed(2)}s / ${Number(c.fadeOutSec ?? 0.02).toFixed(2)}s</strong></span>
+            <div style="display:flex;gap:6px;">
+              <input type="range" min="0.005" max="1.5" step="0.01" value="${c.fadeInSec ?? 0.01}" data-ac-param="fadeInSec" title="페이드 인 (초)">
+              <input type="range" min="0.005" max="1.5" step="0.01" value="${c.fadeOutSec ?? 0.02}" data-ac-param="fadeOutSec" title="페이드 아웃 (초)">
+            </div>
           </label>
         </div>
       </div>
@@ -939,24 +941,45 @@ function openAudioClipWindow(track, clip) {
         });
       }
 
-      // Shade trimmed region
+      // Shade trimmed regions (front cut + back cut)
       const dur = smp?.duration || totalDur;
       if (dur > 0) {
         const bpm = Math.max(40, Math.min(240, project.bpm || 120));
         const barSec = (60 / bpm) * 4;
-        const offPx = Math.min(W, Math.round(((Number(c.offsetSec) || 0) / dur) * W));
-        const playBufSec = (Number(c.lengthBars) || 1) * barSec * (Number(c.playbackRate) || 1);
-        const endPx = Math.min(W, Math.round((((Number(c.offsetSec) || 0) + playBufSec) / dur) * W));
+        const rate = Math.max(0.25, Number(c.playbackRate) || 1);
+        const startSec = Math.max(0, Number(c.offsetSec) || 0);
+        const endTrimSec = Math.max(0, Number(c.endTrimSec) || 0);
+        const effectiveEndSec = Math.max(startSec, dur - endTrimSec);
 
-        wCtx.fillStyle = "rgba(0, 0, 0, 0.65)";
-        wCtx.fillRect(0, 0, offPx, H);
-        wCtx.fillRect(endPx, 0, W - endPx, H);
+        const offPx = Math.min(W, Math.round((startSec / dur) * W));
+        const trimEndPx = Math.max(0, Math.min(W, Math.round((effectiveEndSec / dur) * W)));
 
+        const playBufSec = (Number(c.lengthBars) || 1) * barSec * rate;
+        const endPx = Math.min(trimEndPx, Math.round(((startSec + playBufSec) / dur) * W));
+
+        // Shading outside active play slice (dark translucent overlay)
+        wCtx.fillStyle = "rgba(0, 0, 0, 0.72)";
+        wCtx.fillRect(0, 0, offPx, H); // Start cut shaded
+        wCtx.fillRect(trimEndPx, 0, W - trimEndPx, H); // End trim shaded
+
+        // If arrangement length is shorter than trimmed slice, shade timeline cut
+        if (endPx < trimEndPx) {
+          wCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
+          wCtx.fillRect(endPx, 0, trimEndPx - endPx, H);
+        }
+
+        // Start cut marker line (amber)
         wCtx.strokeStyle = "#ffd166";
-        wCtx.lineWidth = 1.5;
+        wCtx.lineWidth = 1.8;
         wCtx.beginPath();
         wCtx.moveTo(offPx, 0); wCtx.lineTo(offPx, H);
-        wCtx.moveTo(endPx, 0); wCtx.lineTo(endPx, H);
+        wCtx.stroke();
+
+        // End cut marker line (coral red)
+        wCtx.strokeStyle = "#ff6b81";
+        wCtx.lineWidth = 1.8;
+        wCtx.beginPath();
+        wCtx.moveTo(trimEndPx, 0); wCtx.lineTo(trimEndPx, H);
         wCtx.stroke();
       }
     };
@@ -1003,13 +1026,21 @@ function openAudioClipWindow(track, clip) {
           win.bodyEl.querySelector('[data-lbl="playbackRate"]').textContent = `${c.playbackRate.toFixed(2)}x`;
         } else if (k === "offsetSec") {
           win.bodyEl.querySelector('[data-lbl="offsetSec"]').textContent = `${c.offsetSec.toFixed(2)}s`;
+        } else if (k === "endTrimSec") {
+          win.bodyEl.querySelector('[data-lbl="endTrimSec"]').textContent = `${c.endTrimSec.toFixed(2)}s`;
         } else if (k === "lengthBars") {
           win.bodyEl.querySelector('[data-lbl="lenSlider"]').textContent = `${c.lengthBars.toFixed(2)} 마디`;
           win.bodyEl.querySelector('[data-lbl="lengthBars"]').textContent = `${c.lengthBars.toFixed(2)} 마디`;
-        } else if (k === "fadeInSec") {
-          win.bodyEl.querySelector('[data-lbl="fadeInSec"]').textContent = `${c.fadeInSec.toFixed(2)}s`;
-        } else if (k === "fadeOutSec") {
-          win.bodyEl.querySelector('[data-lbl="fadeOutSec"]').textContent = `${c.fadeOutSec.toFixed(2)}s`;
+        } else if (k === "fadeInSec" || k === "fadeOutSec") {
+          const fi = Number(c.fadeInSec ?? 0.01).toFixed(2);
+          const fo = Number(c.fadeOutSec ?? 0.02).toFixed(2);
+          const fLbl = win.bodyEl.querySelector('[data-lbl="fades"]');
+          if (fLbl) fLbl.textContent = `${fi}s / ${fo}s`;
+        }
+        const cutDurEl = win.bodyEl.querySelector('[data-lbl="cutDur"]');
+        if (cutDurEl) {
+          const cutVal = Math.max(0, totalDur - (Number(c.offsetSec) || 0) - (Number(c.endTrimSec) || 0));
+          cutDurEl.textContent = `${cutVal.toFixed(2)}초`;
         }
         persistLocal();
         drawClipWave();
@@ -1023,12 +1054,31 @@ function openAudioClipWindow(track, clip) {
 }
 
 // 1) INDEPENDENT FLOATING PIANO ROLL WINDOW (with 1/32, 1/64, Triplet, Free Timing, Slice, Zoom)
+function syncMelodicClipLength(c) {
+  if (!c || !c.notes) return;
+  let maxEnd = 0;
+  for (const n of c.notes) {
+    const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+    if (end > maxEnd) maxEnd = end;
+  }
+  const neededBars = Math.ceil(maxEnd / 16);
+  if (neededBars > (c.lengthBars || 1)) {
+    c.lengthBars = neededBars;
+  }
+}
+
 function openPianoRollWindow(track, clip) {
   const winId = `win-pr-${clip.id}`;
   if (openPianoRolls.has(clip.id)) {
     wm.toggleMinimize(winId, false);
     wm.focusWindow(winId);
     return;
+  }
+
+  // Piano roll is infinite & linear (never looped)
+  if (engine.loopClipId) {
+    engine.loopClipId = null;
+    syncLoopButtons();
   }
 
   const snapOptsHtml = SNAP_OPTIONS.map(
@@ -1078,14 +1128,6 @@ function openPianoRollWindow(track, clip) {
         </div>
       </div>
       <div class="pr-tool-group">
-        <label class="pr-label">루프 길이
-          <select class="mini-select" data-role="pattern-bars">
-            <option value="1" ${(clip.patternBars || 1) === 1 ? "selected" : ""}>1마디</option>
-            <option value="2" ${clip.patternBars === 2 ? "selected" : ""}>2마디</option>
-            <option value="4" ${clip.patternBars === 4 ? "selected" : ""}>4마디</option>
-            <option value="8" ${clip.patternBars === 8 ? "selected" : ""}>8마디</option>
-          </select>
-        </label>
         <label class="pr-label">스케일
           <select class="mini-select" data-role="scale-select">
             <option value="minor" ${(project.scale || "minor") === "minor" ? "selected" : ""}>C Minor</option>
@@ -1095,7 +1137,6 @@ function openPianoRollWindow(track, clip) {
           </select>
         </label>
         <button class="mini-btn" data-role="open-inst" type="button">🎛 악기 설정</button>
-        <button class="mini-btn" data-pr-loop-clip="${clip.id}" type="button">🔁 이 클립만 루프 재생</button>
         <button class="mini-btn" data-role="clear-notes" type="button">비우기</button>
       </div>
     </div>
@@ -1103,7 +1144,7 @@ function openPianoRollWindow(track, clip) {
       <canvas data-role="pr-canvas"></canvas>
     </div>
     <div class="pr-footer-hint">
-      <span>💡 <b>Shift 누른 채 드래그</b>: 스냅 무시 완전 자유 박자 · <b>Ctrl+클릭(또는 ✂️)</b>: 노트 분할 · <b>양쪽 끝 드래그</b>: 앞/뒤 길이 자유 조절</span>
+      <span>💡 <b>상단 룰러 클릭</b>: 재생 위치 이동 · <b>Shift+휠</b>: 가로 무한 스크롤 · <b>Shift+드래그</b>: 자유 박자 · <b>양끝 드래그</b>: 길이 조절</span>
       <span>노트 위 휠: 벨로시티(강약) · 우클릭: 삭제</span>
     </div>
   `;
@@ -1118,11 +1159,19 @@ function openPianoRollWindow(track, clip) {
       clip: (project.clips || []).find((c) => c.id === clip.id),
     }),
     onNotesChanged: () => {
+      const c = (project.clips || []).find((x) => x.id === clip.id);
+      syncMelodicClipLength(c);
       persistLocal();
       arrangementView.draw();
     },
     onAuditionNote: (trk, midi, dur = 0.22, vel = 0.85) => {
       engine.previewTrackNote(trk, midi, dur, vel);
+    },
+    onSeekStep: (localStep) => {
+      const c = (project.clips || []).find((x) => x.id === clip.id);
+      const clipStart = (c?.bar || 0) * 16;
+      const targetStep = Math.max(0, clipStart + localStep);
+      engine.seekToBar(targetStep / 16);
     },
   });
 
@@ -1138,7 +1187,6 @@ function openPianoRollWindow(track, clip) {
   const patBarsSelect = win.bodyEl.querySelector('[data-role="pattern-bars"]');
   const scaleSelect = win.bodyEl.querySelector('[data-role="scale-select"]');
   const openInstBtn = win.bodyEl.querySelector('[data-role="open-inst"]');
-  const loopBtn = win.bodyEl.querySelector(`[data-pr-loop-clip="${clip.id}"]`);
   const clearBtn = win.bodyEl.querySelector('[data-role="clear-notes"]');
 
   nameInput.addEventListener("input", () => {
@@ -1174,13 +1222,15 @@ function openPianoRollWindow(track, clip) {
   zoomOutBtn.addEventListener("click", () => prView.setZoom(prView.zoom * 0.8));
   zoomInBtn.addEventListener("click", () => prView.setZoom(prView.zoom * 1.25));
 
-  patBarsSelect.addEventListener("change", () => {
-    clip.patternBars = Number(patBarsSelect.value) || 1;
-    if ((clip.lengthBars || 1) < clip.patternBars) clip.lengthBars = clip.patternBars;
-    persistLocal();
-    prView.resizeAndDraw();
-    arrangementView.resizeAndDraw();
-  });
+  if (patBarsSelect) {
+    patBarsSelect.addEventListener("change", () => {
+      clip.patternBars = Number(patBarsSelect.value) || 1;
+      if ((clip.lengthBars || 1) < clip.patternBars) clip.lengthBars = clip.patternBars;
+      persistLocal();
+      prView.resizeAndDraw();
+      arrangementView.resizeAndDraw();
+    });
+  }
 
   scaleSelect.addEventListener("change", () => {
     project.scale = scaleSelect.value;
@@ -1189,17 +1239,6 @@ function openPianoRollWindow(track, clip) {
   });
 
   openInstBtn.addEventListener("click", () => openInstrumentWindow(track.id));
-
-  loopBtn.addEventListener("click", () => {
-    if (engine.loopClipId === clip.id) {
-      engine.loopClipId = null;
-    } else {
-      engine.loopClipId = clip.id;
-      engine.seekToBar(clip.bar || 0);
-      if (!engine.isPlaying) engine.start();
-    }
-    syncLoopButtons();
-  });
 
   clearBtn.addEventListener("click", () => {
     clip.notes = [];
@@ -1260,9 +1299,10 @@ function openBeatSeqWindow(track, clip) {
             <option value="2" ${clip.drumSubdiv === 2 ? "selected" : ""}>32스텝 (반박 쪼개기 1/32)</option>
           </select>
         </label>
-        <button class="mini-btn" data-role="add-custom-pad" type="button">+ 📂 외부 드럼 샘플 패드 추가</button>
+        <button class="mini-btn accent" data-role="open-add-drum" type="button" style="font-weight:800;">＋ 🥁 악기 / 사운드 추가</button>
       </div>
       <div class="pr-tool-group">
+        <button class="mini-btn" data-role="open-inst-win" type="button">🎛 드럼 악기 설정</button>
         <button class="mini-btn" data-role="loop-btn" type="button">🔁 이 클립만 루프 재생</button>
         <button class="mini-btn" data-role="clear-btn" type="button">비우기</button>
       </div>
@@ -1274,7 +1314,8 @@ function openBeatSeqWindow(track, clip) {
   const nameInput = win.bodyEl.querySelector('[data-role="clip-name"]');
   const patBarsSelect = win.bodyEl.querySelector('[data-role="pattern-bars"]');
   const subdivSelect = win.bodyEl.querySelector('[data-role="drum-subdiv"]');
-  const addPadBtn = win.bodyEl.querySelector('[data-role="add-custom-pad"]');
+  const addDrumBtn = win.bodyEl.querySelector('[data-role="open-add-drum"]');
+  const openInstWinBtn = win.bodyEl.querySelector('[data-role="open-inst-win"]');
   const loopBtn = win.bodyEl.querySelector('[data-role="loop-btn"]');
   const clearBtn = win.bodyEl.querySelector('[data-role="clear-btn"]');
 
@@ -1289,13 +1330,24 @@ function openBeatSeqWindow(track, clip) {
     const rows = getTrackDrumRows(trk);
 
     gridWrap.innerHTML = "";
+    if (rows.length === 0) {
+      gridWrap.innerHTML = `
+        <div style="padding:40px 20px;text-align:center;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:12px;">
+          <span>등록된 드럼 악기가 없습니다. 상단의 <b>[＋ 🥁 악기 / 사운드 추가]</b>를 눌러 새 악기를 추가하세요!</span>
+          <button class="mini-btn accent" type="button" data-role="empty-add-btn">＋ 🥁 악기 추가하기</button>
+        </div>
+      `;
+      gridWrap.querySelector('[data-role="empty-add-btn"]')?.addEventListener("click", () => showDrumPickerModal());
+      return;
+    }
+
     rows.forEach((dRow) => {
       if (!Array.isArray(cl.drumSteps[dRow.key])) cl.drumSteps[dRow.key] = new Array(totalCols).fill(0);
       while (cl.drumSteps[dRow.key].length < totalCols) cl.drumSteps[dRow.key].push(0);
 
       const rowEl = document.createElement("div");
       rowEl.className = "drum-row";
-      rowEl.style.setProperty("--row-color", dRow.color);
+      rowEl.style.setProperty("--row-color", dRow.color || "#ff5c5c");
 
       const headEl = document.createElement("div");
       headEl.className = "drum-row-head";
@@ -1304,13 +1356,13 @@ function openBeatSeqWindow(track, clip) {
       padBtn.type = "button";
       padBtn.className = "drum-pad-btn";
       padBtn.title = "클릭: 드럼 소리 미리듣기";
-      padBtn.innerHTML = `<span class="drum-dot" style="background:${dRow.color}"></span><span>${escapeHtml(dRow.name)}</span>`;
+      padBtn.innerHTML = `<span class="drum-dot" style="background:${dRow.color || "#ff5c5c"}"></span><span>${escapeHtml(dRow.name)}</span>`;
       padBtn.addEventListener("click", () => engine.previewDrumRow(trk, dRow.key));
 
       const loadSmpBtn = document.createElement("button");
       loadSmpBtn.type = "button";
       loadSmpBtn.className = "mini-btn";
-      loadSmpBtn.title = "이 드럼 패드에 외부 오디오 샘플(.wav/.mp3) 넣기";
+      loadSmpBtn.title = "이 드럼 패드에 외부 오디오 샘플(.wav/.mp3) 교체";
       loadSmpBtn.textContent = "📂";
       loadSmpBtn.addEventListener("click", () => {
         pendingFileAction = { mode: "drum_pad", trackId: trk.id, drumKey: dRow.key, clipId: cl.id };
@@ -1318,8 +1370,31 @@ function openBeatSeqWindow(track, clip) {
         externalInstFileInput.click();
       });
 
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "mini-btn danger";
+      delBtn.title = `'${dRow.name}' 드럼 악기 행 삭제`;
+      delBtn.textContent = "✕";
+      delBtn.addEventListener("click", () => {
+        const isCustom = Array.isArray(trk.customDrumRows) && trk.customDrumRows.some((r) => r.key === dRow.key);
+        if (isCustom) {
+          trk.customDrumRows = trk.customDrumRows.filter((r) => r.key !== dRow.key);
+        } else {
+          if (!Array.isArray(trk.hiddenDrumKeys)) trk.hiddenDrumKeys = [];
+          if (!trk.hiddenDrumKeys.includes(dRow.key)) trk.hiddenDrumKeys.push(dRow.key);
+        }
+        if (cl.drumSteps && cl.drumSteps[dRow.key]) {
+          delete cl.drumSteps[dRow.key];
+        }
+        persistLocal();
+        renderGrid();
+        arrangementView.draw();
+        showToast(`'${dRow.name}' 드럼 악기를 삭제했습니다.`);
+      });
+
       headEl.appendChild(padBtn);
       headEl.appendChild(loadSmpBtn);
+      headEl.appendChild(delBtn);
 
       const cellsEl = document.createElement("div");
       cellsEl.className = "drum-steps-grid";
@@ -1347,6 +1422,112 @@ function openBeatSeqWindow(track, clip) {
       rowEl.appendChild(cellsEl);
       gridWrap.appendChild(rowEl);
     });
+  };
+
+  const showDrumPickerModal = () => {
+    const trk = (project.tracks || []).find((t) => t.id === track.id);
+    if (!trk) return;
+
+    // Group available sounds by category
+    const categories = {};
+    for (const s of AVAILABLE_DRUM_SOUNDS) {
+      if (!categories[s.category]) categories[s.category] = [];
+      categories[s.category].push(s);
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "drum-picker-overlay";
+
+    let catsHtml = "";
+    for (const [cat, list] of Object.entries(categories)) {
+      const itemsHtml = list
+        .map(
+          (snd) => `
+            <div class="drum-sound-card">
+              <div class="drum-sound-info">
+                <span class="drum-dot" style="background:${snd.color};"></span>
+                <strong>${escapeHtml(snd.name)}</strong>
+              </div>
+              <div class="drum-sound-actions">
+                <button type="button" class="mini-btn" data-preview-snd="${snd.id}">▶ 듣기</button>
+                <button type="button" class="mini-btn accent" data-add-snd="${snd.id}">＋ 추가</button>
+              </div>
+            </div>
+          `
+        )
+        .join("");
+
+      catsHtml += `
+        <div class="drum-cat-section">
+          <div class="drum-cat-title">${escapeHtml(cat.toUpperCase())}</div>
+          <div class="drum-sound-grid">${itemsHtml}</div>
+        </div>
+      `;
+    }
+
+    overlay.innerHTML = `
+      <div class="drum-picker-card">
+        <div class="drum-picker-header">
+          <h4>🥁 드럼 악기 / 사운드 추가</h4>
+          <button type="button" class="mini-btn" data-close-picker>✕</button>
+        </div>
+        <div class="drum-picker-body">
+          <button type="button" class="ext-drop-btn" data-role="pick-custom-sample" style="border-color:rgba(84,160,255,0.6);color:#cfe5ff;padding:8px 12px;">
+            📂 내 컴퓨터 오디오 샘플(.wav / .mp3) 파일로 악기 추가
+          </button>
+          ${catsHtml}
+        </div>
+      </div>
+    `;
+
+    overlay.querySelector("[data-close-picker]").addEventListener("click", () => overlay.remove());
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    overlay.querySelector('[data-role="pick-custom-sample"]').addEventListener("click", () => {
+      pendingFileAction = { mode: "add_drum_pad", trackId: trk.id, clipId: clip.id };
+      externalInstFileInput.value = "";
+      externalInstFileInput.click();
+      overlay.remove();
+    });
+
+    overlay.querySelectorAll("[data-preview-snd]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const snd = AVAILABLE_DRUM_SOUNDS.find((s) => s.id === btn.dataset.previewSnd);
+        if (snd) engine.previewDrumSpec(trk, snd);
+      });
+    });
+
+    overlay.querySelectorAll("[data-add-snd]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const snd = AVAILABLE_DRUM_SOUNDS.find((s) => s.id === btn.dataset.addSnd);
+        if (!snd) return;
+
+        // If it was a default row that was hidden, unhide it!
+        if (Array.isArray(trk.hiddenDrumKeys) && trk.hiddenDrumKeys.includes(snd.id)) {
+          trk.hiddenDrumKeys = trk.hiddenDrumKeys.filter((k) => k !== snd.id);
+        } else {
+          if (!Array.isArray(trk.customDrumRows)) trk.customDrumRows = [];
+          const key = `${snd.id}_${Date.now().toString(36).slice(-4)}`;
+          trk.customDrumRows.push({
+            key,
+            name: snd.name,
+            color: snd.color,
+            engine: snd.engine,
+            baseMidi: snd.baseMidi,
+            synth: { ...(snd.synth || {}) },
+          });
+        }
+        persistLocal();
+        renderGrid();
+        overlay.remove();
+        engine.previewDrumSpec(trk, snd);
+        showToast(`'${snd.name}' 드럼 악기가 추가되었습니다!`);
+      });
+    });
+
+    win.bodyEl.appendChild(overlay);
   };
 
   const updatePlayhead = (local16thStep) => {
@@ -1402,11 +1583,8 @@ function openBeatSeqWindow(track, clip) {
     arrangementView.draw();
   });
 
-  addPadBtn.addEventListener("click", () => {
-    pendingFileAction = { mode: "add_drum_pad", trackId: track.id, clipId: clip.id };
-    externalInstFileInput.value = "";
-    externalInstFileInput.click();
-  });
+  addDrumBtn.addEventListener("click", () => showDrumPickerModal());
+  openInstWinBtn.addEventListener("click", () => openInstrumentWindow(track.id));
 
   loopBtn.addEventListener("click", () => {
     if (engine.loopClipId === clip.id) {
@@ -1765,6 +1943,7 @@ function openInstrumentWindow(trackId) {
               <div style="display:flex;gap:5px;flex-shrink:0;">
                 <button type="button" class="mini-btn" data-preview-pad="${r.key}">▶ 테스트</button>
                 <button type="button" class="mini-btn" data-sample-pad="${r.key}">📂 샘플 교체</button>
+                <button type="button" class="mini-btn danger" data-del-pad="${r.key}" title="이 패드 삭제">✕</button>
               </div>
             </div>
           `;
@@ -1781,8 +1960,9 @@ function openInstrumentWindow(trackId) {
               ${presetOpts}
             </select>
             <div style="display:flex;gap:5px;flex-wrap:wrap;">
-              <button class="mini-btn accent" data-role="open-beatseq" type="button">🥁 비트 시퀀서 창 열기</button>
-              <button class="mini-btn" data-role="add-drum-pad" type="button">+ 📂 커스텀 패드 추가</button>
+              <button class="mini-btn accent" data-role="open-beatseq" type="button">🥁 비트 시퀀서 열기</button>
+              <button class="mini-btn" data-role="add-builtin-pad" type="button" style="font-weight:700;">＋ 🥁 악기 추가</button>
+              <button class="mini-btn" data-role="add-drum-pad" type="button">+ 📂 외부 샘플</button>
             </div>
           </div>
 
@@ -1822,10 +2002,102 @@ function openInstrumentWindow(trackId) {
         openClipWindow(t.id, clip.id);
       });
 
+      win.bodyEl.querySelector('[data-role="add-builtin-pad"]').addEventListener("click", () => {
+        // Trigger sound picker overlay inside instrument window
+        const overlay = document.createElement("div");
+        overlay.className = "drum-picker-overlay";
+        const categories = {};
+        for (const s of AVAILABLE_DRUM_SOUNDS) {
+          if (!categories[s.category]) categories[s.category] = [];
+          categories[s.category].push(s);
+        }
+        let catsHtml = "";
+        for (const [cat, list] of Object.entries(categories)) {
+          const itemsHtml = list.map(snd => `
+            <div class="drum-sound-card">
+              <div class="drum-sound-info">
+                <span class="drum-dot" style="background:${snd.color};"></span>
+                <strong>${escapeHtml(snd.name)}</strong>
+              </div>
+              <div class="drum-sound-actions">
+                <button type="button" class="mini-btn" data-preview-snd="${snd.id}">▶ 듣기</button>
+                <button type="button" class="mini-btn accent" data-add-snd="${snd.id}">＋ 추가</button>
+              </div>
+            </div>
+          `).join("");
+          catsHtml += `<div class="drum-cat-section"><div class="drum-cat-title">${escapeHtml(cat.toUpperCase())}</div><div class="drum-sound-grid">${itemsHtml}</div></div>`;
+        }
+        overlay.innerHTML = `
+          <div class="drum-picker-card">
+            <div class="drum-picker-header">
+              <h4>🥁 드럼 악기 / 사운드 추가</h4>
+              <button type="button" class="mini-btn" data-close-picker>✕</button>
+            </div>
+            <div class="drum-picker-body">${catsHtml}</div>
+          </div>
+        `;
+        overlay.querySelector("[data-close-picker]").addEventListener("click", () => overlay.remove());
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+        overlay.querySelectorAll("[data-preview-snd]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const snd = AVAILABLE_DRUM_SOUNDS.find((s) => s.id === btn.dataset.previewSnd);
+            if (snd) engine.previewDrumSpec(t, snd);
+          });
+        });
+        overlay.querySelectorAll("[data-add-snd]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const snd = AVAILABLE_DRUM_SOUNDS.find((s) => s.id === btn.dataset.addSnd);
+            if (!snd) return;
+            if (Array.isArray(t.hiddenDrumKeys) && t.hiddenDrumKeys.includes(snd.id)) {
+              t.hiddenDrumKeys = t.hiddenDrumKeys.filter((k) => k !== snd.id);
+            } else {
+              if (!Array.isArray(t.customDrumRows)) t.customDrumRows = [];
+              const key = `${snd.id}_${Date.now().toString(36).slice(-4)}`;
+              t.customDrumRows.push({
+                key,
+                name: snd.name,
+                color: snd.color,
+                engine: snd.engine,
+                baseMidi: snd.baseMidi,
+                synth: { ...(snd.synth || {}) },
+              });
+            }
+            persistLocal();
+            renderContent();
+            for (const bs of openBeatSeqs.values()) {
+              if (bs.trackId === t.id) bs.renderGrid();
+            }
+            overlay.remove();
+            engine.previewDrumSpec(t, snd);
+            showToast(`'${snd.name}' 드럼 악기가 추가되었습니다!`);
+          });
+        });
+        win.bodyEl.appendChild(overlay);
+      });
+
       win.bodyEl.querySelector('[data-role="add-drum-pad"]').addEventListener("click", () => {
         pendingFileAction = { mode: "add_drum_pad", trackId: t.id };
         externalInstFileInput.value = "";
         externalInstFileInput.click();
+      });
+
+      win.bodyEl.querySelectorAll("[data-del-pad]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const dKey = btn.dataset.delPad;
+          const isCustom = Array.isArray(t.customDrumRows) && t.customDrumRows.some((r) => r.key === dKey);
+          if (isCustom) {
+            t.customDrumRows = t.customDrumRows.filter((r) => r.key !== dKey);
+          } else {
+            if (!Array.isArray(t.hiddenDrumKeys)) t.hiddenDrumKeys = [];
+            if (!t.hiddenDrumKeys.includes(dKey)) t.hiddenDrumKeys.push(dKey);
+          }
+          persistLocal();
+          renderContent();
+          for (const bs of openBeatSeqs.values()) {
+            if (bs.trackId === t.id) bs.renderGrid();
+          }
+          showToast("드럼 패드를 삭제했습니다.");
+        });
       });
 
       win.bodyEl.querySelectorAll("[data-preview-pad]").forEach((btn) => {
@@ -2303,6 +2575,37 @@ function animationFrame() {
       }
     }
   }
+
+  if (engine.isPlaying) {
+    const currentStep = engine.pollPlayhead();
+    arrangementView.setPlayhead(currentStep);
+
+    for (const [clipId, prEntry] of openPianoRolls.entries()) {
+      const clip = (project.clips || []).find((c) => c.id === clipId);
+      if (!clip) continue;
+      const clipStart = (clip.bar || 0) * 16;
+      const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
+      if (currentStep >= clipStart && currentStep < clipEnd) {
+        prEntry.view.setPlayhead(currentStep - clipStart);
+      } else {
+        prEntry.view.setPlayhead(-1);
+      }
+    }
+
+    for (const [clipId, bsEntry] of openBeatSeqs.entries()) {
+      const clip = (project.clips || []).find((c) => c.id === clipId);
+      if (!clip) continue;
+      const clipStart = (clip.bar || 0) * 16;
+      const clipEnd = clipStart + (clip.lengthBars || 1) * 16;
+      if (currentStep >= clipStart && currentStep < clipEnd) {
+        const localStep = (currentStep - clipStart) % ((clip.patternBars || 1) * 16);
+        bsEntry.updatePlayhead(localStep);
+      } else {
+        bsEntry.updatePlayhead(-1);
+      }
+    }
+  }
+
   requestAnimationFrame(animationFrame);
 }
 

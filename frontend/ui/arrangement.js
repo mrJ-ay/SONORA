@@ -18,8 +18,9 @@ export class ArrangementView {
     this.onChanged = onChanged;
     this.onSeekBar = onSeekBar;
 
-    this.totalBars = 16;
-    this.playheadGlobalStep = -1;
+    this.barWidth = BAR_WIDTH;
+    this.totalBars = 256;
+    this.playheadGlobalStep = 0;
     this.liveRecording = null; // { trackId, startBar }
     this.dragState = null;
 
@@ -30,19 +31,32 @@ export class ArrangementView {
   getGeometry() {
     const project = this.getProject();
     const tracks = project.tracks || [];
-    let maxBar = this.totalBars;
+    const barW = this.barWidth || BAR_WIDTH;
+    const scrollLeft = this.container ? (this.container.scrollLeft || 0) : 0;
+    const containerW = this.container ? (this.container.clientWidth || 800) : 800;
+
+    let maxClipEnd = 0;
     for (const c of project.clips || []) {
-      const end = Math.ceil((Number(c.bar) || 0) + (Number(c.lengthBars) || 1)) + 2;
-      if (end > maxBar) maxBar = end;
+      const end = Math.ceil((Number(c.bar) || 0) + (Number(c.lengthBars) || 1));
+      if (end > maxClipEnd) maxClipEnd = end;
+    }
+    if (this.dragState && this.dragState.clip) {
+      const dragEnd = Math.ceil((Number(this.dragState.clip.bar) || 0) + (Number(this.dragState.clip.lengthBars) || 1));
+      if (dragEnd > maxClipEnd) maxClipEnd = dragEnd;
     }
     if (this.liveRecording && this.playheadGlobalStep >= 0) {
-      const recEnd = Math.ceil(this.playheadGlobalStep / 16) + 4;
-      if (recEnd > maxBar) maxBar = recEnd;
+      const recEnd = Math.ceil(this.playheadGlobalStep / 16);
+      if (recEnd > maxClipEnd) maxClipEnd = recEnd;
     }
-    const bars = Math.max(16, maxBar);
-    const width = Math.max(this.container.clientWidth || 640, bars * BAR_WIDTH);
-    const height = Math.max(RULER_HEIGHT + Math.max(tracks.length, 1) * TRACK_ROW_HEIGHT, this.container.clientHeight || 260);
-    const barW = width / bars;
+
+    const visibleEndBar = Math.ceil((scrollLeft + containerW) / barW);
+    // Initial minimum 256 bars, or expand dynamically beyond visible viewport + 64 bars, or clipEnd + 64 bars!
+    const bars = Math.max(256, this.totalBars || 256, visibleEndBar + 64, maxClipEnd + 64);
+    this.totalBars = bars;
+
+    const width = Math.max(containerW, bars * barW);
+    const height = Math.max(RULER_HEIGHT + Math.max(tracks.length, 1) * TRACK_ROW_HEIGHT, this.container ? (this.container.clientHeight || 260) : 260);
+
     return { width, height, bars, barW, trackCount: tracks.length };
   }
 
@@ -58,6 +72,18 @@ export class ArrangementView {
     this.draw();
   }
 
+  zoomIn() {
+    const prevW = this.barWidth || BAR_WIDTH;
+    this.barWidth = Math.min(220, prevW + 12);
+    this.resizeAndDraw();
+  }
+
+  zoomOut() {
+    const prevW = this.barWidth || BAR_WIDTH;
+    this.barWidth = Math.max(36, prevW - 12);
+    this.resizeAndDraw();
+  }
+
   coords(e) {
     const rect = this.canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -65,7 +91,7 @@ export class ArrangementView {
     const { bars, barW } = this.getGeometry();
     const trackIdx = Math.floor((y - RULER_HEIGHT) / TRACK_ROW_HEIGHT);
     const barFloat = Math.max(0, x / barW);
-    const bar = Math.max(0, Math.min(bars - 1, Math.floor(barFloat)));
+    const bar = Math.max(0, Math.floor(barFloat));
     return { x, y, trackIdx, bar, barFloat, bars, barW };
   }
 
@@ -81,6 +107,45 @@ export class ArrangementView {
 
   bindEvents() {
     this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    if (this.container) {
+      this.container.addEventListener("scroll", () => {
+        const barW = this.barWidth || BAR_WIDTH;
+        const scrollLeft = this.container.scrollLeft || 0;
+        const containerW = this.container.clientWidth || 800;
+        const visibleEndBar = Math.ceil((scrollLeft + containerW) / barW);
+        if (visibleEndBar + 40 >= this.totalBars) {
+          this.totalBars = Math.max(this.totalBars + 64, visibleEndBar + 96);
+          this.resizeAndDraw();
+        } else {
+          this.draw();
+        }
+      });
+    }
+
+    this.canvas.addEventListener("wheel", (e) => {
+      if (e.ctrlKey) {
+        // Zoom horizontally
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 8 : -8;
+        const prevW = this.barWidth || BAR_WIDTH;
+        const newW = Math.max(36, Math.min(220, prevW + delta));
+        if (newW !== prevW) {
+          const rect = this.canvas.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const barAtMouse = mouseX / prevW;
+          this.barWidth = newW;
+          this.resizeAndDraw();
+          const newMouseX = barAtMouse * newW;
+          this.container.scrollLeft += (newMouseX - mouseX);
+        }
+      } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        // Shift + Wheel or horizontal wheel: scroll horizontally
+        e.preventDefault();
+        const delta = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        this.container.scrollLeft += delta * 1.25;
+      }
+    }, { passive: false });
 
     this.canvas.addEventListener("dblclick", (e) => {
       const pos = this.coords(e);
@@ -168,6 +233,22 @@ export class ArrangementView {
       const tracks = project.tracks || [];
       const { clip, isAudio } = this.dragState;
 
+      // Auto-expand timeline if dragging near or past current totalBars
+      if (pos.barFloat + 20 >= this.totalBars) {
+        this.totalBars = Math.max(this.totalBars + 64, Math.ceil(pos.barFloat + 64));
+        this.resizeAndDraw();
+      }
+
+      // Auto-scroll horizontally when dragging near container edges
+      if (this.container) {
+        const cRect = this.container.getBoundingClientRect();
+        if (e.clientX > cRect.right - 35) {
+          this.container.scrollLeft += 16;
+        } else if (e.clientX < cRect.left + 35 && this.container.scrollLeft > 0) {
+          this.container.scrollLeft -= 16;
+        }
+      }
+
       if (this.dragState.mode === "move") {
         const rawDelta = (pos.x - this.dragState.startX) / pos.barW;
         let nextBar = this.dragState.origBar + rawDelta;
@@ -178,7 +259,7 @@ export class ArrangementView {
         } else {
           nextBar = Math.round(nextBar);
         }
-        clip.bar = Math.max(0, Math.min(pos.bars - 0.25, nextBar));
+        clip.bar = Math.max(0, nextBar);
 
         const dTrack = Math.round((pos.y - this.dragState.startY) / TRACK_ROW_HEIGHT);
         const nextTrackIdx = Math.max(0, Math.min(tracks.length - 1, this.dragState.origTrackIdx + dTrack));
@@ -200,10 +281,10 @@ export class ArrangementView {
         const rawEnd = pos.x / pos.barW;
         if (isAudio) {
           const snappedEnd = e.shiftKey ? Math.round(rawEnd * 64) / 64 : Math.round(rawEnd * 4) / 4;
-          clip.lengthBars = Math.max(0.15, Math.min(pos.bars - clip.bar, snappedEnd - clip.bar));
+          clip.lengthBars = Math.max(0.15, snappedEnd - clip.bar);
         } else {
           const endBar = Math.round(rawEnd);
-          clip.lengthBars = Math.max(1, Math.min(pos.bars - clip.bar, endBar - clip.bar));
+          clip.lengthBars = Math.max(1, endBar - clip.bar);
         }
         this.draw();
       }
@@ -221,17 +302,34 @@ export class ArrangementView {
   setPlayhead(globalStep) {
     if (this.playheadGlobalStep !== globalStep) {
       this.playheadGlobalStep = globalStep;
-      this.draw();
+      const currentBar = Math.ceil(globalStep / 16);
+      if (currentBar + 16 > this.totalBars) {
+        this.totalBars = Math.max(this.totalBars + 64, currentBar + 64);
+        this.resizeAndDraw();
+      } else {
+        this.draw();
+      }
     }
   }
 
   draw() {
     const dpr = window.devicePixelRatio || 1;
     const { width, height, bars, barW } = this.getGeometry();
+    if (this.canvas.width !== Math.floor(width * dpr) || this.canvas.height !== Math.floor(height * dpr)) {
+      this.canvas.width = Math.floor(width * dpr);
+      this.canvas.height = Math.floor(height * dpr);
+      this.canvas.style.width = `${width}px`;
+      this.canvas.style.height = `${height}px`;
+    }
     const project = this.getProject();
     const tracks = project.tracks || [];
     const selectedClipId = this.getSelectedClipId ? this.getSelectedClipId() : null;
     const ctx = this.ctx;
+
+    const scrollLeft = this.container ? (this.container.scrollLeft || 0) : 0;
+    const containerW = this.container ? (this.container.clientWidth || 800) : 800;
+    const viewStartBar = Math.max(0, Math.floor((scrollLeft - barW) / barW));
+    const viewEndBar = Math.min(bars, Math.ceil((scrollLeft + containerW + barW) / barW));
 
     ctx.save();
     ctx.scale(dpr, dpr);
@@ -271,11 +369,11 @@ export class ArrangementView {
       ctx.fillText("좌측 상단의 '+ 트랙 추가' 버튼을 눌러 트랙을 추가하세요.", 24, 70);
     }
 
-    // Bar Ruler & Grid lines
+    // Bar Ruler & Grid lines (optimized for visible range)
     ctx.fillStyle = "#0b0e15";
     ctx.fillRect(0, 0, width, RULER_HEIGHT);
 
-    for (let b = 0; b <= bars; b++) {
+    for (let b = viewStartBar; b <= viewEndBar; b++) {
       const x = b * barW;
       const is4Bar = b % 4 === 0;
       ctx.strokeStyle = is4Bar ? "#3a4966" : "#1f2838";
@@ -372,7 +470,7 @@ export class ArrangementView {
         // Mini Note / Drum Preview inside clip
         ctx.fillStyle = color;
         const lenBars = Math.ceil(clip.lengthBars || 1);
-        const patSteps = (clip.patternBars || 1) * 16;
+        const patSteps = track.type === "drumkit" ? (clip.patternBars || 1) * 16 : Infinity;
 
         for (let b = 0; b < lenBars; b++) {
           const bx = x + b * barW;
@@ -438,21 +536,31 @@ export class ArrangementView {
       }
     }
 
-    // Playhead
+    // Playhead (Vertical scrubber indicator)
     if (this.playheadGlobalStep >= 0) {
       const px = (this.playheadGlobalStep / 16) * barW;
-      ctx.strokeStyle = "#ffd166";
-      ctx.lineWidth = 2;
+      // Semi-transparent glowing column
+      ctx.fillStyle = "rgba(245, 158, 11, 0.16)";
+      ctx.fillRect(px - 2, 0, 4, height);
+
+      // Playhead vertical line
+      ctx.strokeStyle = "#fbbf24";
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(px, 0);
       ctx.lineTo(px, height);
       ctx.stroke();
 
-      ctx.fillStyle = "#ffd166";
+      // Top badge / Scrubber head on ruler
+      ctx.fillStyle = "#f59e0b";
       ctx.beginPath();
-      ctx.moveTo(px - 6, 0);
-      ctx.lineTo(px + 6, 0);
-      ctx.lineTo(px, 9);
+      ctx.roundRect(px - 8, 0, 16, 14, 2);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(px - 6, 14);
+      ctx.lineTo(px + 6, 14);
+      ctx.lineTo(px, 20);
       ctx.closePath();
       ctx.fill();
     }

@@ -10,6 +10,25 @@ export const DRUM_ROWS = [
   { key: "openhat", name: "Open Hat", color: "#00d2d3", engine: "openhat", baseMidi: 46, synth: { cutoff: 7600, decay: 0.32 } },
 ];
 
+export const AVAILABLE_DRUM_SOUNDS = [
+  { id: "kick808",   name: "808 Kick",         category: "Kick",       color: "#ff5c5c", engine: "kick808",   baseMidi: 36, synth: { decay: 0.38 } },
+  { id: "snare",     name: "Crispy Snare",     category: "Snare",      color: "#ff9f43", engine: "snare",     baseMidi: 38, synth: { cutoff: 3400, decay: 0.19 } },
+  { id: "clap",      name: "909 Clap",         category: "Clap",       color: "#feca57", engine: "clap",      baseMidi: 39, synth: { cutoff: 2200, decay: 0.22 } },
+  { id: "hihat",     name: "Closed Hat",       category: "Hi-Hat",     color: "#1dd1a1", engine: "hihat",     baseMidi: 42, synth: { cutoff: 8200, decay: 0.065 } },
+  { id: "openhat",   name: "Open Hat",         category: "Hi-Hat",     color: "#00d2d3", engine: "openhat",   baseMidi: 46, synth: { cutoff: 7600, decay: 0.32 } },
+  { id: "rimshot",   name: "Woody Rimshot",    category: "Snare/Rim",  color: "#e17055", engine: "rimshot",   baseMidi: 37, synth: { cutoff: 2100, decay: 0.08 } },
+  { id: "tom_hi",    name: "High Tom",         category: "Toms",       color: "#6c5ce7", engine: "tom",       baseMidi: 50, synth: { pitch: 185, decay: 0.28 } },
+  { id: "tom_mid",   name: "Mid Tom",          category: "Toms",       color: "#a29bfe", engine: "tom",       baseMidi: 47, synth: { pitch: 135, decay: 0.32 } },
+  { id: "tom_low",   name: "Floor Low Tom",    category: "Toms",       color: "#575fcf", engine: "tom",       baseMidi: 43, synth: { pitch: 95, decay: 0.38 } },
+  { id: "crash",     name: "Crash Cymbal",     category: "Cymbals",    color: "#fdcb6e", engine: "crash",     baseMidi: 49, synth: { cutoff: 5500, decay: 0.85 } },
+  { id: "ride",      name: "Ride Cymbal",      category: "Cymbals",    color: "#ffeaa7", engine: "ride",      baseMidi: 51, synth: { cutoff: 7400, decay: 0.45 } },
+  { id: "cowbell",   name: "808 Cowbell",      category: "Percussion", color: "#fab1a0", engine: "cowbell",   baseMidi: 56, synth: { decay: 0.22 } },
+  { id: "shaker",    name: "Groove Shaker",    category: "Percussion", color: "#55efc4", engine: "shaker",    baseMidi: 70, synth: { decay: 0.07 } },
+  { id: "perc",      name: "Afro Conga",       category: "Percussion", color: "#00b894", engine: "perc",      baseMidi: 63, synth: { pitch: 240, decay: 0.18 } },
+  { id: "sub_boom",  name: "808 Sub Boom",     category: "Bass/Sub",   color: "#ff7675", engine: "sub_boom",  baseMidi: 33, synth: { decay: 0.75 } },
+  { id: "synth_zap", name: "Electro Zap",      category: "FX/Zap",     color: "#fd79a8", engine: "synth_zap", baseMidi: 64, synth: { decay: 0.14 } },
+];
+
 export const INSTRUMENT_PRESETS = [
   {
     id: "fmkeys",
@@ -234,6 +253,242 @@ export function triggerInstrumentVoice(ctx, destNode, voiceSpec, midi, time, dur
 
     noise.start(t);
     noise.stop(t + decay + 0.02);
+    return;
+  }
+
+  if (engine === "rimshot") {
+    const decay = Math.max(0.04, s.decay ?? 0.08);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(840, t);
+    osc.frequency.exponentialRampToValueAtTime(320, t + 0.02);
+    gain.gain.setValueAtTime(vel * 0.9, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = getNoiseBuffer(ctx);
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(s.cutoff || 2100, t);
+    filter.Q.setValueAtTime(2.8, t);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(vel * 0.55, t);
+    nGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.035);
+
+    osc.connect(gain);
+    gain.connect(destNode);
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(destNode);
+
+    osc.start(t);
+    noise.start(t);
+    osc.stop(t + decay + 0.02);
+    noise.stop(t + 0.05);
+    return;
+  }
+
+  if (engine === "tom") {
+    const startFreq = Number(s.pitch ?? (midi ? midiToFreq(midi) : 130));
+    const decay = Math.max(0.12, s.decay ?? 0.3);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(startFreq * 1.5, t);
+    osc.frequency.exponentialRampToValueAtTime(startFreq, t + 0.04);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(30, startFreq * 0.65), t + decay);
+
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(vel * 0.95, t + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    const click = ctx.createOscillator();
+    const cGain = ctx.createGain();
+    click.type = "triangle";
+    click.frequency.setValueAtTime(380, t);
+    click.frequency.exponentialRampToValueAtTime(70, t + 0.02);
+    cGain.gain.setValueAtTime(vel * 0.35, t);
+    cGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+
+    osc.connect(gain);
+    gain.connect(destNode);
+    click.connect(cGain);
+    cGain.connect(destNode);
+
+    osc.start(t);
+    click.start(t);
+    osc.stop(t + decay + 0.03);
+    click.stop(t + 0.04);
+    return;
+  }
+
+  if (engine === "crash") {
+    const decay = Math.max(0.4, s.decay ?? 0.85);
+    const noise = ctx.createBufferSource();
+    noise.buffer = getNoiseBuffer(ctx);
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.setValueAtTime(s.cutoff || 5500, t);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(8000, t);
+    bp.Q.setValueAtTime(1.2, t);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(vel * 0.7, t);
+    gain.gain.exponentialRampToValueAtTime(vel * 0.35, t + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    noise.connect(hp);
+    hp.connect(bp);
+    bp.connect(gain);
+    gain.connect(destNode);
+
+    noise.start(t);
+    noise.stop(t + decay + 0.05);
+    return;
+  }
+
+  if (engine === "ride") {
+    const decay = Math.max(0.2, s.decay ?? 0.45);
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    osc1.type = "square";
+    osc2.type = "square";
+    osc1.frequency.setValueAtTime(587, t);
+    osc2.frequency.setValueAtTime(845, t);
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(7400, t);
+    bp.Q.setValueAtTime(4.0, t);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(vel * 0.45, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    osc1.connect(bp);
+    osc2.connect(bp);
+    bp.connect(gain);
+    gain.connect(destNode);
+
+    osc1.start(t);
+    osc2.start(t);
+    osc1.stop(t + decay + 0.02);
+    osc2.stop(t + decay + 0.02);
+    return;
+  }
+
+  if (engine === "cowbell") {
+    const decay = Math.max(0.1, s.decay ?? 0.22);
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    osc1.type = "square";
+    osc2.type = "square";
+    osc1.frequency.setValueAtTime(587, t);
+    osc2.frequency.setValueAtTime(845, t);
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(2600, t);
+    bp.Q.setValueAtTime(2.5, t);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(vel * 0.75, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    osc1.connect(bp);
+    osc2.connect(bp);
+    bp.connect(gain);
+    gain.connect(destNode);
+
+    osc1.start(t);
+    osc2.start(t);
+    osc1.stop(t + decay + 0.02);
+    osc2.stop(t + decay + 0.02);
+    return;
+  }
+
+  if (engine === "shaker") {
+    const decay = Math.max(0.04, s.decay ?? 0.07);
+    const noise = ctx.createBufferSource();
+    noise.buffer = getNoiseBuffer(ctx);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(9200, t);
+    bp.Q.setValueAtTime(3.2, t);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(vel * 0.58, t + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    noise.connect(bp);
+    bp.connect(gain);
+    gain.connect(destNode);
+
+    noise.start(t);
+    noise.stop(t + decay + 0.02);
+    return;
+  }
+
+  if (engine === "perc") {
+    const decay = Math.max(0.08, s.decay ?? 0.18);
+    const startFreq = Number(s.pitch ?? 240);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(startFreq * 1.8, t);
+    osc.frequency.exponentialRampToValueAtTime(startFreq, t + 0.035);
+
+    gain.gain.setValueAtTime(vel * 0.85, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    osc.connect(gain);
+    gain.connect(destNode);
+
+    osc.start(t);
+    osc.stop(t + decay + 0.02);
+    return;
+  }
+
+  if (engine === "sub_boom") {
+    const decay = Math.max(0.35, s.decay ?? 0.75);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(85, t);
+    osc.frequency.exponentialRampToValueAtTime(38, t + 0.09);
+
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(vel * 1.1, t + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    osc.connect(gain);
+    gain.connect(destNode);
+
+    osc.start(t);
+    osc.stop(t + decay + 0.03);
+    return;
+  }
+
+  if (engine === "synth_zap") {
+    const decay = Math.max(0.08, s.decay ?? 0.14);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(1600, t);
+    osc.frequency.exponentialRampToValueAtTime(70, t + decay);
+
+    gain.gain.setValueAtTime(vel * 0.7, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    osc.connect(gain);
+    gain.connect(destNode);
+
+    osc.start(t);
+    osc.stop(t + decay + 0.02);
     return;
   }
 

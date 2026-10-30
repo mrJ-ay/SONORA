@@ -108,12 +108,13 @@ function buildAudioGraph(ctx, project, withAnalysers = true) {
 }
 
 export function getTrackDrumRows(track) {
+  const hiddenKeys = new Set(track.hiddenDrumKeys || []);
   const custom = Array.isArray(track.customDrumRows) ? track.customDrumRows : [];
-  const merged = DRUM_ROWS.map((r) => {
+  const merged = DRUM_ROWS.filter((r) => !hiddenKeys.has(r.key)).map((r) => {
     const smp = track.drumSamples?.[r.key];
     return smp ? { ...r, name: smp.name || r.name, drumSampleId: smp.sampleId } : r;
   });
-  return [...merged, ...custom];
+  return [...merged, ...custom.filter((r) => !hiddenKeys.has(r.key))];
 }
 
 function isAudioTimelineClip(track, clip) {
@@ -127,10 +128,12 @@ function triggerAudioClipSlice(ctx, destination, clip, startTime, sliceOffsetSec
 
   const rate = Math.max(0.25, Math.min(4.0, Number(clip.playbackRate) || 1.0));
   const baseOffsetSec = Math.max(0, Number(clip.offsetSec) || 0);
+  const endTrimSec = Math.max(0, Number(clip.endTrimSec) || 0);
+  const effectiveBufDuration = Math.max(baseOffsetSec, buf.duration - endTrimSec);
   const bufOffset = baseOffsetSec + Math.max(0, sliceOffsetSec) * rate;
-  if (bufOffset >= buf.duration - 0.005) return null;
+  if (bufOffset >= effectiveBufDuration - 0.005) return null;
 
-  const availTimelineSec = (buf.duration - bufOffset) / rate;
+  const availTimelineSec = Math.max(0, (effectiveBufDuration - bufOffset) / rate);
   const actualPlaySec = Math.min(playDurSec, availTimelineSec);
   if (actualPlaySec <= 0.008) return null;
 
@@ -187,9 +190,8 @@ function scheduleClipStep(ctx, graph, track, clip, localStep, stepTime, stepDurS
     }
   } else {
     const notes = clip.notes || [];
-    const loopSteps = (clip.patternBars || 1) * 16;
     for (const n of notes) {
-      const nStart = ((Number(n.start) || 0) % loopSteps + loopSteps) % loopSteps;
+      const nStart = Math.max(0, Number(n.start) || 0);
       if (Math.floor(nStart) === localStep) {
         const subStepOffsetSec = (nStart - localStep) * stepDurSec;
         const durSec = Math.max(0.06, Number(n.length) || 0.5) * stepDurSec * 0.96;
@@ -381,11 +383,30 @@ export class SonoraEngine {
     triggerInstrumentVoice(this.ctx, dest, row, row.baseMidi || 36, this.ctx.currentTime, 0.2, 0.88);
   }
 
+  previewDrumSpec(track, spec) {
+    if (!track || !spec) return;
+    this.ensureContext();
+    const strip = this.graph?.strips.get(track.id);
+    const dest = strip ? strip.input : this.graph.masterBus;
+    triggerInstrumentVoice(this.ctx, dest, spec, spec.baseMidi || 36, this.ctx.currentTime, 0.25, 0.9);
+  }
+
   getSongTotalSteps(project) {
-    let maxBar = 4;
+    let maxBar = 512; // Generous DAW timeline: 512 bars minimum (8,192 steps)
     for (const clip of project.clips || []) {
-      const endBar = Math.ceil((Number(clip.bar) || 0) + (Number(clip.lengthBars) || 1));
-      if (endBar > maxBar) maxBar = endBar;
+      let clipEnd = Math.ceil((Number(clip.bar) || 0) + (Number(clip.lengthBars) || 1));
+      if (clip.notes && clip.notes.length) {
+        let maxNoteEnd = 0;
+        for (const n of clip.notes) {
+          const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+          if (end > maxNoteEnd) maxNoteEnd = end;
+        }
+        clipEnd = Math.max(clipEnd, Math.ceil((clip.bar || 0) + maxNoteEnd / 16));
+      }
+      if (clipEnd + 64 > maxBar) maxBar = clipEnd + 64;
+    }
+    if (this.currentGlobalStep / 16 + 64 > maxBar) {
+      maxBar = Math.ceil(this.currentGlobalStep / 16) + 64;
     }
     return maxBar * 16;
   }
@@ -488,10 +509,20 @@ export class SonoraEngine {
         }
 
         const startBar = clip.bar || 0;
-        const lenBars = clip.lengthBars || 1;
+        let lenBars = clip.lengthBars || 1;
+        if (track.type !== "drumkit" && clip.notes && clip.notes.length) {
+          let maxNoteEnd = 0;
+          for (const n of clip.notes) {
+            const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+            if (end > maxNoteEnd) maxNoteEnd = end;
+          }
+          lenBars = Math.max(lenBars, Math.ceil(maxNoteEnd / 16));
+        }
         if (currentBar >= startBar && currentBar < startBar + lenBars) {
+          const isDrum = track.type === "drumkit";
           const loopSteps = (clip.patternBars || 1) * 16;
-          const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
+          const stepOffset = (currentBar - startBar) * 16 + stepInBar;
+          const localStep = isDrum ? (stepOffset % loopSteps) : stepOffset;
           scheduleClipStep(this.ctx, this.graph, track, clip, localStep, playTime, baseStepDur);
         }
       }
@@ -516,9 +547,11 @@ export class SonoraEngine {
           }
         } else {
           const totalSongSteps = this.getSongTotalSteps(project);
-          const next = (stepIndex + 1) % totalSongSteps;
-          if (next === 0) {
-            this.triggeredAudioClipIds.clear();
+          const next = stepIndex + 1;
+          if (next >= totalSongSteps) {
+            // Reached the end of arrangement - stop instead of unwanted looping!
+            this.stop(true);
+            return;
           }
           this.currentGlobalStep = next;
         }
@@ -587,10 +620,20 @@ export async function exportProjectToWav(project) {
       const track = (project.tracks || []).find((tr) => tr.id === clip.trackId);
       if (!track || isAudioTimelineClip(track, clip)) continue;
       const startBar = clip.bar || 0;
-      const lenBars = clip.lengthBars || 1;
+      let lenBars = clip.lengthBars || 1;
+      if (track.type !== "drumkit" && clip.notes && clip.notes.length) {
+        let maxNoteEnd = 0;
+        for (const n of clip.notes) {
+          const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+          if (end > maxNoteEnd) maxNoteEnd = end;
+        }
+        lenBars = Math.max(lenBars, Math.ceil(maxNoteEnd / 16));
+      }
       if (currentBar >= startBar && currentBar < startBar + lenBars) {
+        const isDrum = track.type === "drumkit";
         const loopSteps = (clip.patternBars || 1) * 16;
-        const localStep = ((currentBar - startBar) * 16 + stepInBar) % loopSteps;
+        const stepOffset = (currentBar - startBar) * 16 + stepInBar;
+        const localStep = isDrum ? (stepOffset % loopSteps) : stepOffset;
         scheduleClipStep(offlineCtx, graph, track, clip, localStep, t, stepDur);
       }
     }

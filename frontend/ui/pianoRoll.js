@@ -27,13 +27,14 @@ export const SNAP_OPTIONS = [
 ];
 
 export class PianoRollView {
-  constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote }) {
+  constructor(canvas, container, { getEditingContext, onNotesChanged, onAuditionNote, onSeekStep }) {
     this.canvas = canvas;
     this.container = container;
     this.ctx = canvas.getContext("2d");
     this.getEditingContext = getEditingContext;
     this.onNotesChanged = onNotesChanged;
     this.onAuditionNote = onAuditionNote;
+    this.onSeekStep = onSeekStep;
 
     this.snapStep = 0.5; // Default to 1/32 (반박 쪼개기 가능!) right out of the box
     this.tool = "draw";  // "draw" | "slice"
@@ -90,11 +91,23 @@ export class PianoRollView {
 
   getGeometry() {
     const ctxData = this.getEditingContext();
-    const steps = (ctxData?.clip?.patternBars || 1) * 16;
-    const baseStepPx = 36 * this.zoom;
-    const width = Math.max(this.container.clientWidth || 680, Math.round(KEY_WIDTH + steps * baseStepPx));
+    const clip = ctxData?.clip;
+    let maxNoteEnd = 0;
+    for (const n of clip?.notes || []) {
+      const end = (Number(n.start) || 0) + (Number(n.length) || 1);
+      if (end > maxNoteEnd) maxNoteEnd = end;
+    }
+    const stepWidth = Math.max(12, Math.round(36 * this.zoom));
+    const containerWidth = this.container.clientWidth || 800;
+    const scrollLeft = this.container.scrollLeft || 0;
+
+    // 무제한 캔버스: 기본 최소 128마디 (2048스텝)
+    // 스크롤 위치 및 노트 위치에 따라 우측으로 항상 16마디(256스텝) 이상 끊임없이 자동 무한 확장!
+    const visibleEndStep = Math.ceil((scrollLeft + containerWidth - KEY_WIDTH) / stepWidth);
+    const noteEndStep = Math.ceil((maxNoteEnd + 64) / 16) * 16;
+    const steps = Math.max(2048, visibleEndStep + 256, noteEndStep);
+    const width = KEY_WIDTH + steps * stepWidth;
     const height = HEADER_HEIGHT + TOTAL_KEYS * ROW_HEIGHT;
-    const stepWidth = (width - KEY_WIDTH) / steps;
     return { width, height, steps, stepWidth };
   }
 
@@ -125,7 +138,7 @@ export class PianoRollView {
     const { stepWidth, steps } = this.getGeometry();
     const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
     const midi = MAX_MIDI - row;
-    const rawStep = Math.max(0, Math.min(steps, (x - KEY_WIDTH) / stepWidth));
+    const rawStep = Math.max(0, (x - KEY_WIDTH) / stepWidth);
     return { x, y, midi, rawStep, stepWidth, steps };
   }
 
@@ -198,18 +211,40 @@ export class PianoRollView {
 
   bindEvents() {
     this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-    this.container.addEventListener("scroll", () => this.draw());
 
-    // Scroll wheel on note = adjust velocity; Ctrl+Wheel = horizontal zoom
+    // Infinite scroll expansion on scroll
+    this.container.addEventListener("scroll", () => {
+      const { steps, stepWidth } = this.getGeometry();
+      const visibleEndStep = (this.container.scrollLeft + this.container.clientWidth - KEY_WIDTH) / stepWidth;
+      if (visibleEndStep > steps - 128) {
+        this.resizeAndDraw();
+      } else {
+        this.draw();
+      }
+    });
+
+    // Mouse Wheel:
+    // - Shift+Wheel or horizontal scroll: smooth horizontal infinite scroll
+    // - Ctrl+Wheel: horizontal zoom
+    // - Wheel over note: adjust velocity
     this.canvas.addEventListener("wheel", (e) => {
       const ctxData = this.getEditingContext();
       if (!ctxData?.clip) return;
+
       if (e.ctrlKey) {
         e.preventDefault();
         const factor = e.deltaY < 0 ? 1.15 : 0.87;
         this.setZoom(this.zoom * factor);
         return;
       }
+
+      if (e.shiftKey || Math.abs(e.deltaX) > 0) {
+        e.preventDefault();
+        const delta = e.shiftKey ? (e.deltaY || e.deltaX) : e.deltaX;
+        this.container.scrollLeft += delta * 1.5;
+        return;
+      }
+
       const pos = this.coordsFromEvent(e);
       if (pos.x >= KEY_WIDTH && pos.y >= HEADER_HEIGHT) {
         const hit = this.findNoteAt(ctxData.clip.notes || [], pos.rawStep, pos.midi);
@@ -220,6 +255,7 @@ export class PianoRollView {
           this.selectedNoteId = hit.id;
           this.onNotesChanged();
           this.draw();
+          return;
         }
       }
     }, { passive: false });
@@ -231,7 +267,20 @@ export class PianoRollView {
       if (!clip.notes) clip.notes = [];
 
       const pos = this.coordsFromEvent(e);
-      if (pos.y < HEADER_HEIGHT || pos.midi < MIN_MIDI || pos.midi > MAX_MIDI) return;
+
+      // Top Ruler Click / Drag -> Scrub Playhead!
+      if (pos.y < HEADER_HEIGHT) {
+        if (pos.x >= KEY_WIDTH) {
+          const step = Math.max(0, this.quantize(pos.rawStep, e.shiftKey, "round"));
+          if (this.onSeekStep) this.onSeekStep(step);
+          this.dragState = { mode: "scrub" };
+          this.setPlayhead(step);
+          this.draw();
+        }
+        return;
+      }
+
+      if (pos.midi < MIN_MIDI || pos.midi > MAX_MIDI) return;
 
       if (pos.x < KEY_WIDTH) {
         this.onAuditionNote(track, pos.midi);
@@ -291,10 +340,10 @@ export class PianoRollView {
         this.draw();
       } else {
         if (this.tool === "slice") return;
-        const startStep = Math.max(0, Math.min(pos.steps - 0.08, this.quantize(pos.rawStep, e.shiftKey, "floor")));
+        const startStep = Math.max(0, this.quantize(pos.rawStep, e.shiftKey, "floor"));
         const initLen = Math.max(
           this.minNoteLength(e.shiftKey),
-          Math.min(this.snapStep > 0 && !e.shiftKey ? Math.max(this.snapStep, this.defaultNoteLen) : this.defaultNoteLen, pos.steps - startStep)
+          this.snapStep > 0 && !e.shiftKey ? Math.max(this.snapStep, this.defaultNoteLen) : this.defaultNoteLen
         );
         const newNote = {
           id: `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -324,6 +373,14 @@ export class PianoRollView {
     const pos = this.coordsFromEvent(e);
     const minLen = this.minNoteLength(e.shiftKey);
 
+    if (this.dragState.mode === "scrub") {
+      const step = Math.max(0, this.quantize(pos.rawStep, e.shiftKey, "round"));
+      if (this.onSeekStep) this.onSeekStep(step);
+      this.setPlayhead(step);
+      this.draw();
+      return;
+    }
+
     if (this.dragState.mode === "key") {
       if (pos.midi >= MIN_MIDI && pos.midi <= MAX_MIDI && pos.midi !== this.dragState.lastAuditionMidi) {
         this.dragState.lastAuditionMidi = pos.midi;
@@ -336,7 +393,7 @@ export class PianoRollView {
     if (this.dragState.mode === "move") {
       const rawTargetStart = pos.rawStep - this.dragState.grabOffsetSteps;
       const snappedStart = this.quantize(rawTargetStart, e.shiftKey, "round");
-      const nextStart = Math.max(0, Math.min(pos.steps - this.dragState.note.length, snappedStart));
+      const nextStart = Math.max(0, snappedStart);
       const dMidi = -Math.round((pos.y - this.dragState.startY) / ROW_HEIGHT);
       const nextMidi = Math.max(MIN_MIDI, Math.min(MAX_MIDI, this.dragState.origMidi + dMidi));
       if (nextMidi !== this.dragState.lastAuditionMidi) {
@@ -353,7 +410,7 @@ export class PianoRollView {
       if (this.dragState.mode === "create-drag" && Math.abs(rawDiff) < 0.12) return;
       const nextLen = Math.max(
         minLen,
-        Math.min(pos.steps - this.dragState.note.start, endSnapped - this.dragState.note.start)
+        endSnapped - this.dragState.note.start
       );
       this.dragState.note.length = Math.round(nextLen * 10000) / 10000;
       this.defaultNoteLen = this.dragState.note.length;
@@ -371,9 +428,11 @@ export class PianoRollView {
 
   handleMouseUp() {
     if (this.dragState) {
-      const changed = this.dragState.mode !== "key";
+      const mode = this.dragState.mode;
       this.dragState = null;
-      if (changed) this.onNotesChanged();
+      if (mode !== "key" && mode !== "scrub") {
+        this.onNotesChanged();
+      }
       this.draw();
     }
   }
@@ -396,6 +455,12 @@ export class PianoRollView {
 
     const dpr = window.devicePixelRatio || 1;
     const { width, height, steps, stepWidth } = this.getGeometry();
+    if (this.canvas.width !== Math.floor(width * dpr) || this.canvas.height !== Math.floor(height * dpr)) {
+      this.canvas.width = Math.floor(width * dpr);
+      this.canvas.height = Math.floor(height * dpr);
+      this.canvas.style.width = `${width}px`;
+      this.canvas.style.height = `${height}px`;
+    }
     const ctx = this.ctx;
 
     ctx.save();
@@ -518,17 +583,65 @@ export class PianoRollView {
       }
     }
 
-    // Playhead
-    if (this.playheadStep >= 0 && this.playheadStep < steps) {
+    // Playhead (Vertical scrubber indicator with neon glow, marker badge & off-screen tracker)
+    if (this.playheadStep >= 0) {
       const px = KEY_WIDTH + this.playheadStep * stepWidth;
-      ctx.fillStyle = "rgba(255, 209, 102, 0.14)";
-      ctx.fillRect(px, HEADER_HEIGHT, stepWidth, height - HEADER_HEIGHT);
-      ctx.strokeStyle = "#ffd166";
-      ctx.lineWidth = 2;
+      const scrollLeft = this.container.scrollLeft || 0;
+      const viewRight = scrollLeft + (this.container.clientWidth || 800);
+
+      // Vertical glow scrubber line
+      ctx.fillStyle = "rgba(251, 191, 36, 0.22)";
+      ctx.fillRect(px - 3, 0, 6, height);
+      ctx.strokeStyle = "#fbbf24";
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(px, 0);
       ctx.lineTo(px, height);
       ctx.stroke();
+
+      // Top indicator triangle head on ruler
+      ctx.fillStyle = "#f59e0b";
+      ctx.beginPath();
+      ctx.moveTo(px - 7, 0);
+      ctx.lineTo(px + 7, 0);
+      ctx.lineTo(px, HEADER_HEIGHT - 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Bar position badge
+      const curBar = Math.floor(this.playheadStep / 16) + 1;
+      const curBeat = Math.floor((this.playheadStep % 16) / 4) + 1;
+      const badgeText = `${curBar}.${curBeat}`;
+      ctx.font = "800 10px Pretendard, system-ui, sans-serif";
+      const bw = ctx.measureText(badgeText).width + 8;
+      ctx.fillStyle = "#f59e0b";
+      ctx.beginPath();
+      ctx.roundRect(px - bw / 2, 1, bw, 13, 3);
+      ctx.fill();
+      ctx.fillStyle = "#000000";
+      ctx.fillText(badgeText, px - bw / 2 + 4, 11);
+
+      // Off-screen indicator on ruler if playhead is scrolled out of view
+      if (px < scrollLeft + KEY_WIDTH) {
+        ctx.fillStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.roundRect(scrollLeft + KEY_WIDTH + 4, 3, 58, 20, 4);
+        ctx.fill();
+        ctx.fillStyle = "#000000";
+        ctx.font = "800 10px Pretendard, system-ui, sans-serif";
+        ctx.fillText(`◀ Bar ${curBar}`, scrollLeft + KEY_WIDTH + 8, 17);
+      } else if (px > viewRight) {
+        ctx.fillStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.roundRect(viewRight - 66, 3, 58, 20, 4);
+        ctx.fill();
+        ctx.fillStyle = "#000000";
+        ctx.font = "800 10px Pretendard, system-ui, sans-serif";
+        ctx.fillText(`Bar ${curBar} ▶`, viewRight - 62, 17);
+      }
     }
 
     // Sticky Piano Keys column on left (tracks horizontal scroll!)

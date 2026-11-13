@@ -82,7 +82,7 @@ const unmuteAllBtn = document.querySelector("#unmuteAllBtn");
 const ONEID_API_URL =
   location.hostname === "localhost" || location.hostname === "127.0.0.1"
     ? "http://127.0.0.1:8000"
-    : "https://oneid-icvq.onrender.com";
+    : "https://oneid-ruddy.vercel.app";
 const ONEID_CLIENT_ID = "sonora";
 const ONEID_VERIFIER_KEY = "sonora_oneid_verifier";
 const ONEID_STATE_KEY = "sonora_oneid_state";

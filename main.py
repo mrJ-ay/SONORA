@@ -21,7 +21,7 @@ ONEID_JWT_SECRET = os.getenv(
     "ONEID_JWT_SECRET",
     "5K9sewleVmRejBIRGN7pHaIP1Yf63QR98_z94MOty1YSk8bv81cRwtZFvwUJkj-d",
 ).strip()
-ONEID_ISSUER_URL = os.getenv("ONEID_ISSUER_URL", "https://oneid-icvq.onrender.com").strip()
+ONEID_ISSUER_URL = os.getenv("ONEID_ISSUER_URL", "https://oneid-ruddy.vercel.app").strip()
 ONEID_CLIENT_ID = os.getenv("ONEID_CLIENT_ID", "sonora").strip()
 
 app = FastAPI(title="SONORA Web DAW", version="2.0.0")
